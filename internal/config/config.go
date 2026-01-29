@@ -14,6 +14,7 @@ type Config struct {
 	Servers         []ServerConfig  `yaml:"servers"`
 	Security        SecurityConfig  `yaml:"security"`
 	Logging         LoggingConfig   `yaml:"logging"`
+	Recording       RecordingConfig `yaml:"recording"`
 	PromptDetection PromptConfig    `yaml:"prompt_detection"`
 	Mode            string          `yaml:"mode"` // "ssh" or "local"
 }
@@ -37,15 +38,25 @@ type AuthConfig struct {
 
 // SecurityConfig defines security settings.
 type SecurityConfig struct {
-	SudoCacheTTL       time.Duration `yaml:"sudo_cache_ttl"`
-	IdleTimeout        time.Duration `yaml:"idle_timeout"`
-	MaxSessionsPerUser int           `yaml:"max_sessions_per_user"`
+	SudoCacheTTL        time.Duration `yaml:"sudo_cache_ttl"`
+	IdleTimeout         time.Duration `yaml:"idle_timeout"`
+	MaxSessionsPerUser  int           `yaml:"max_sessions_per_user"`
+	CommandBlocklist    []string      `yaml:"command_blocklist"`    // Regex patterns for blocked commands
+	CommandAllowlist    []string      `yaml:"command_allowlist"`    // If set, only these patterns allowed
+	MaxAuthFailures     int           `yaml:"max_auth_failures"`    // Max failed auth attempts before lockout
+	AuthLockoutDuration time.Duration `yaml:"auth_lockout_duration"` // Duration of auth lockout
 }
 
 // LoggingConfig defines logging settings.
 type LoggingConfig struct {
 	Level    string `yaml:"level"`    // "debug", "info", "warn", "error"
 	Sanitize bool   `yaml:"sanitize"` // sanitize sensitive data from logs
+}
+
+// RecordingConfig defines session recording settings.
+type RecordingConfig struct {
+	Enabled bool   `yaml:"enabled"` // enable session recording
+	Path    string `yaml:"path"`    // directory to store recordings
 }
 
 // PromptConfig defines prompt detection settings.

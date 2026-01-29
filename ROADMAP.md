@@ -4,23 +4,23 @@
 **Goal:** Working stdio MCP server with local PTY support
 
 ### Week 1: Project Scaffold
-- [ ] Initialize Go module (`github.com/user/claude-shell-mcp`)
+- [x] Initialize Go module (`github.com/acolita/claude-shell-mcp`)
 - [ ] Set up CI/CD (GitHub Actions: lint, test, build)
-- [ ] Implement MCP protocol handler using `mcp-go`
-- [ ] Basic logging infrastructure (slog with JSON)
-- [ ] Configuration parsing (YAML/JSON)
+- [x] Implement MCP protocol handler using `mcp-go`
+- [x] Basic logging infrastructure (slog with JSON)
+- [x] Configuration parsing (YAML/JSON)
 
-**Deliverable:** `claude-shell-mcp --version` runs and responds to `initialize` request
+**Deliverable:** `claude-shell-mcp --version` runs and responds to `initialize` request ✅
 
 ### Week 2: Local PTY Core
-- [ ] Integrate `creack/pty` for local shell spawning
-- [ ] Implement session management (in-memory store)
-- [ ] Tool: `shell_session_create` (local mode)
-- [ ] Tool: `shell_exec` with timeout
-- [ ] Tool: `shell_session_close`
-- [ ] Basic output capture (stdout/stderr separation)
+- [x] Integrate `creack/pty` for local shell spawning
+- [x] Implement session management (in-memory store)
+- [x] Tool: `shell_session_create` (local mode)
+- [x] Tool: `shell_exec` with timeout
+- [x] Tool: `shell_session_close`
+- [x] Basic output capture (stdout/stderr separation)
 
-**Deliverable:** Can execute `echo "hello"` and return output via MCP
+**Deliverable:** Can execute `echo "hello"` and return output via MCP ✅
 
 ---
 
@@ -28,20 +28,21 @@
 **Goal:** Remote SSH connections with session persistence
 
 ### Week 3: SSH Client
-- [ ] SSH connection pooling using `crypto/ssh`
-- [ ] Key-based authentication (RSA, Ed25519)
-- [ ] SSH agent forwarding support
-- [ ] Host key verification (known_hosts)
-- [ ] PTY allocation over SSH channel (`RequestPty`)
+- [x] SSH connection pooling using `crypto/ssh`
+- [x] Key-based authentication (RSA, Ed25519)
+- [x] SSH agent forwarding support
+- [x] Host key verification (known_hosts)
+- [x] PTY allocation over SSH channel (`RequestPty`)
+- [x] Password authentication support
 
-**Deliverable:** Connect to remote server and execute `uname -a`
+**Deliverable:** Connect to remote server and execute `uname -a` ✅
 
 ### Week 4: Session Lifecycle
-- [ ] Persistent SSH sessions across MCP tool calls
-- [ ] Heartbeat/keepalive (prevent connection drop)
+- [x] Persistent SSH sessions across MCP tool calls
+- [x] Heartbeat/keepalive (prevent connection drop)
 - [ ] Automatic reconnection with state recovery
-- [ ] Idle timeout detection and cleanup
-- [ ] Session multiplexing (multiple sessions per MCP instance)
+- [x] Idle timeout detection and cleanup
+- [x] Session multiplexing (multiple sessions per MCP instance)
 
 **Deliverable:** 
 ```bash
@@ -57,22 +58,22 @@ shell_exec(session_id="s1", command="pwd") # Returns /tmp
 **Goal:** Interactive prompt detection and the "awaiting_input" protocol
 
 ### Week 5: Prompt Detection Engine
-- [ ] Pattern matching system (regex registry)
-- [ ] Default patterns: sudo, SSH confirmations, apt
-- [ ] Configurable custom patterns
-- [ ] PTY output buffering (last N lines)
-- [ ] Non-blocking I/O with `select`-style multiplexing
+- [x] Pattern matching system (regex registry)
+- [x] Default patterns: sudo, SSH confirmations, apt, npm, git
+- [x] Configurable custom patterns
+- [x] PTY output buffering (last N lines)
+- [x] Non-blocking I/O with deadline-based reads
 
-**Deliverable:** Detects `[sudo] password:` and pauses execution
+**Deliverable:** Detects `[sudo] password:` and pauses execution ✅
 
 ### Week 6: Interrupt & Resume Tools
-- [ ] `shell_exec` returns `status: "awaiting_input"`
-- [ ] `shell_provide_input` tool implementation
-- [ ] Input injection into PTY (with proper echo handling)
-- [ ] `shell_interrupt` (Ctrl+C sending)
-- [ ] Multi-turn conversation state machine
+- [x] `shell_exec` returns `status: "awaiting_input"`
+- [x] `shell_provide_input` tool implementation
+- [x] Input injection into PTY (with proper echo handling)
+- [x] `shell_interrupt` (Ctrl+C sending)
+- [x] Multi-turn conversation state machine
 
-**Deliverable:** Full flow:
+**Deliverable:** Full flow: ✅
 ```
 exec("sudo whoami") → awaiting_input → provide_input("pass") → completed (returns "root")
 ```
@@ -83,19 +84,19 @@ exec("sudo whoami") → awaiting_input → provide_input("pass") → completed (
 **Goal:** Production-ready credential handling
 
 ### Week 7: Secure Cache
-- [ ] In-memory encrypted credential cache
-- [ ] Automatic cryptographic wipe after TTL
-- [ ] Sudo credential caching (5-min default)
-- [ ] Passphrase-protected SSH key support
+- [x] In-memory encrypted credential cache
+- [x] Automatic cryptographic wipe after TTL
+- [x] Sudo credential caching (5-min default)
+- [x] Passphrase-protected SSH key support
 - [ ] Integration with OS keyring (optional)
 
-**Deliverable:** Sudo password cached securely, auto-injected for subsequent commands
+**Deliverable:** Sudo password cached securely, auto-injected for subsequent commands ✅
 
 ### Week 8: Audit & Safety
-- [ ] Comprehensive audit logging (no secrets)
+- [x] Comprehensive audit logging (no secrets)
 - [ ] Command allowlist/blocklist (optional)
 - [ ] Session recording (asciicast format)
-- [ ] Max session limits per user
+- [x] Max session limits per user
 - [ ] Rate limiting on authentication attempts
 
 **Deliverable:** Security audit passes, no plaintext passwords in logs
@@ -106,23 +107,23 @@ exec("sudo whoami") → awaiting_input → provide_input("pass") → completed (
 **Goal:** Full shell state persistence (env vars, cwd)
 
 ### Week 9: State Snapshots
-- [ ] Environment variable capture (`env` parsing)
-- [ ] Working directory tracking (`pwd`)
+- [x] Environment variable capture (`env` parsing)
+- [x] Working directory tracking (`pwd`)
 - [ ] Shell alias/function detection (bash/zsh)
 - [ ] State restoration on session reconnect
-- [ ] `shell_session_status` tool
+- [x] `shell_session_status` tool
 
-**Deliverable:** 
+**Deliverable:** ✅
 ```
 Turn 1: export DB_HOST=localhost
 Turn 2: echo $DB_HOST  # Returns localhost via state restoration
 ```
 
 ### Week 10: Shell Compatibility
-- [ ] Bash support (primary)
+- [x] Bash support (primary)
 - [ ] Zsh support
 - [ ] Fish shell support (nice to have)
-- [ ] Shell detection and adaptation
+- [x] Shell detection and adaptation
 - [ ] Custom shell initialization (.bashrc sourcing control)
 
 **Deliverable:** Works on Ubuntu (bash), macOS (zsh), Alpine (ash)
@@ -250,15 +251,5 @@ Adjust roadmap based on friction points discovered.
 
 ---
 
-*Last updated: 2025-01-30*  
+*Last updated: 2026-01-29*
 *Target v1.0 release: 14 weeks from start*
-```
-
-These documents provide a complete specification for building this tool. The **CLAUDE.md** focuses on the protocol design, Go architecture, and MCP tool schemas, while the **ROADMAP.md** breaks down the 14-week implementation into concrete deliverables with risk mitigation strategies.
-
-Key architectural decisions captured:
-- **Explicit interrupt pattern** instead of sampling (as you requested)
-- **Go's `crypto/ssh` + `creack/pty`** for robust SSH/PTY handling  
-- **Secure in-memory credential cache** with automatic wiping
-- **Session state machine** (running/awaiting_input/completed)
-- **14-week phased approach** delivering incremental value

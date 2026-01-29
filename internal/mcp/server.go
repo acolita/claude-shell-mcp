@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/acolita/claude-shell-mcp/internal/config"
+	"github.com/acolita/claude-shell-mcp/internal/recording"
 	"github.com/acolita/claude-shell-mcp/internal/security"
 	"github.com/acolita/claude-shell-mcp/internal/session"
 	"github.com/mark3labs/mcp-go/server"
@@ -12,10 +13,13 @@ import (
 
 // Server wraps the MCP server implementation.
 type Server struct {
-	mcpServer      *server.MCPServer
-	sessionManager *session.Manager
-	sudoCache      *security.SudoCache
-	config         *config.Config
+	mcpServer        *server.MCPServer
+	sessionManager   *session.Manager
+	sudoCache        *security.SudoCache
+	commandFilter    *security.CommandFilter
+	authRateLimiter  *security.AuthRateLimiter
+	recordingManager *recording.Manager
+	config           *config.Config
 }
 
 // NewServer creates a new MCP server with the given configuration.
@@ -33,11 +37,42 @@ func NewServer(cfg *config.Config) *Server {
 		sudoTTL = security.DefaultSudoTTL
 	}
 
+	// Initialize recording manager
+	recordingPath := cfg.Recording.Path
+	if recordingPath == "" {
+		recordingPath = "/tmp/claude-shell-mcp/recordings"
+	}
+
+	// Initialize command filter
+	commandFilter, err := security.NewCommandFilter(
+		cfg.Security.CommandBlocklist,
+		cfg.Security.CommandAllowlist,
+	)
+	if err != nil {
+		slog.Warn("failed to initialize command filter, using permissive mode",
+			slog.String("error", err.Error()),
+		)
+		commandFilter, _ = security.NewCommandFilter(nil, nil)
+	}
+
+	// Initialize auth rate limiter
+	maxAuthFailures := cfg.Security.MaxAuthFailures
+	if maxAuthFailures <= 0 {
+		maxAuthFailures = security.DefaultMaxAuthFailures
+	}
+	authLockoutDuration := cfg.Security.AuthLockoutDuration
+	if authLockoutDuration <= 0 {
+		authLockoutDuration = security.DefaultAuthLockoutDuration
+	}
+
 	s := &Server{
-		mcpServer:      mcpServer,
-		sessionManager: session.NewManager(cfg),
-		sudoCache:      security.NewSudoCache(sudoTTL),
-		config:         cfg,
+		mcpServer:        mcpServer,
+		sessionManager:   session.NewManager(cfg),
+		sudoCache:        security.NewSudoCache(sudoTTL),
+		commandFilter:    commandFilter,
+		authRateLimiter:  security.NewAuthRateLimiter(maxAuthFailures, authLockoutDuration),
+		recordingManager: recording.NewManager(recordingPath, cfg.Recording.Enabled),
+		config:           cfg,
 	}
 
 	s.registerTools()

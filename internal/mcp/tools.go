@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	"github.com/acolita/claude-shell-mcp/internal/session"
@@ -124,6 +125,18 @@ func (s *Server) handleShellSessionCreate(ctx context.Context, req mcp.CallToolR
 		if user == "" {
 			return mcp.NewToolResultError("user is required for ssh mode"), nil
 		}
+
+		// Check rate limiting for SSH connections
+		if locked, remaining := s.authRateLimiter.IsLocked(host, user); locked {
+			slog.Warn("auth rate limited",
+				slog.String("host", host),
+				slog.String("user", user),
+				slog.Duration("remaining", remaining),
+			)
+			return mcp.NewToolResultError(
+				fmt.Sprintf("authentication locked due to too many failures, try again in %v", remaining),
+			), nil
+		}
 	}
 
 	slog.Info("creating shell session",
@@ -138,7 +151,26 @@ func (s *Server) handleShellSessionCreate(ctx context.Context, req mcp.CallToolR
 		User: user,
 	})
 	if err != nil {
+		// Record auth failure for SSH
+		if mode == "ssh" {
+			s.authRateLimiter.RecordFailure(host, user)
+		}
 		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	// Record auth success for SSH
+	if mode == "ssh" {
+		s.authRateLimiter.RecordSuccess(host, user)
+	}
+
+	// Start recording if enabled
+	if s.recordingManager.IsEnabled() {
+		if err := s.recordingManager.StartRecording(sess.ID, 120, 24); err != nil {
+			slog.Warn("failed to start recording",
+				slog.String("session_id", sess.ID),
+				slog.String("error", err.Error()),
+			)
+		}
 	}
 
 	result := map[string]any{
@@ -146,6 +178,10 @@ func (s *Server) handleShellSessionCreate(ctx context.Context, req mcp.CallToolR
 		"status":     "connected",
 		"mode":       mode,
 		"shell":      "/bin/bash",
+	}
+
+	if path := s.recordingManager.GetRecordingPath(sess.ID); path != "" {
+		result["recording_path"] = path
 	}
 
 	return jsonResult(result)
@@ -163,6 +199,15 @@ func (s *Server) handleShellExec(ctx context.Context, req mcp.CallToolRequest) (
 		return mcp.NewToolResultError("command is required"), nil
 	}
 
+	// Check command filter
+	if allowed, reason := s.commandFilter.IsAllowed(command); !allowed {
+		slog.Warn("command blocked by filter",
+			slog.String("command", command),
+			slog.String("reason", reason),
+		)
+		return mcp.NewToolResultError("command blocked: " + reason), nil
+	}
+
 	sess, err := s.sessionManager.Get(sessionID)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -173,10 +218,16 @@ func (s *Server) handleShellExec(ctx context.Context, req mcp.CallToolRequest) (
 		slog.String("command", command),
 	)
 
+	// Record command input
+	s.recordingManager.RecordInput(sessionID, command+"\n", false)
+
 	result, err := sess.Exec(command, timeoutMs)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
+
+	// Record output
+	s.recordingManager.RecordOutput(sessionID, result.Stdout)
 
 	// If a sudo password prompt is detected and we have a cached password, auto-inject it
 	if result.Status == "awaiting_input" && result.PromptType == "password" {
@@ -185,11 +236,17 @@ func (s *Server) handleShellExec(ctx context.Context, req mcp.CallToolRequest) (
 				slog.String("session_id", sessionID),
 			)
 
+			// Record masked password input
+			s.recordingManager.RecordInput(sessionID, string(cachedPwd), true)
+
 			// Provide the cached password
 			result, err = sess.ProvideInput(string(cachedPwd))
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
+
+			// Record output after password
+			s.recordingManager.RecordOutput(sessionID, result.Stdout)
 
 			// Mark that we used cached sudo
 			result.SudoAuthenticated = true
@@ -219,6 +276,9 @@ func (s *Server) handleShellProvideInput(ctx context.Context, req mcp.CallToolRe
 		slog.Bool("cache_for_sudo", cacheForSudo),
 	)
 
+	// Record input (masked if it's a password)
+	s.recordingManager.RecordInput(sessionID, input+"\n", cacheForSudo)
+
 	// Cache the password if requested (for sudo prompts)
 	if cacheForSudo && input != "" {
 		s.sudoCache.Set(sessionID, []byte(input))
@@ -232,6 +292,9 @@ func (s *Server) handleShellProvideInput(ctx context.Context, req mcp.CallToolRe
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
+
+	// Record output
+	s.recordingManager.RecordOutput(sessionID, result.Stdout)
 
 	// Add sudo authentication info to result
 	if cacheForSudo {
@@ -305,11 +368,24 @@ func (s *Server) handleShellSessionClose(ctx context.Context, req mcp.CallToolRe
 		slog.String("session_id", sessionID),
 	)
 
+	// Get recording path before closing
+	recordingPath := s.recordingManager.GetRecordingPath(sessionID)
+
+	// Stop recording
+	s.recordingManager.StopRecording(sessionID)
+
 	if err := s.sessionManager.Close(sessionID); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	return mcp.NewToolResultText("Session closed"), nil
+	result := map[string]any{
+		"status": "closed",
+	}
+	if recordingPath != "" {
+		result["recording_path"] = recordingPath
+	}
+
+	return jsonResult(result)
 }
 
 // jsonResult converts a value to a JSON tool result.
