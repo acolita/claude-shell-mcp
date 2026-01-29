@@ -13,7 +13,8 @@ import (
 
 	"github.com/acolita/claude-shell-mcp/internal/config"
 	"github.com/acolita/claude-shell-mcp/internal/prompt"
-	"github.com/acolita/claude-shell-mcp/internal/pty"
+	localpty "github.com/acolita/claude-shell-mcp/internal/pty"
+	"github.com/acolita/claude-shell-mcp/internal/ssh"
 )
 
 // State represents the session state.
@@ -40,10 +41,16 @@ type Session struct {
 	CreatedAt time.Time
 	LastUsed  time.Time
 
+	// SSH connection info (for ssh mode)
+	Host string
+	Port int
+	User string
+
 	// Internal fields
 	config         *config.Config
 	mu             sync.Mutex
-	localPTY       *pty.LocalPTY
+	pty            PTY // Common interface for local and SSH PTY
+	sshClient      *ssh.Client
 	promptDetector *prompt.Detector
 
 	// Pending prompt info when awaiting input
@@ -55,10 +62,6 @@ type Session struct {
 func (s *Session) Initialize() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	if s.Mode != "local" {
-		return fmt.Errorf("ssh mode not implemented yet")
-	}
 
 	// Create prompt detector
 	s.promptDetector = prompt.NewDetector()
@@ -72,14 +75,22 @@ func (s *Session) Initialize() error {
 		}
 	}
 
-	// Create local PTY
-	opts := pty.DefaultOptions()
-	localPTY, err := pty.NewLocalPTY(opts)
+	if s.Mode == "ssh" {
+		return s.initializeSSH()
+	}
+
+	return s.initializeLocal()
+}
+
+// initializeLocal sets up a local PTY session.
+func (s *Session) initializeLocal() error {
+	opts := localpty.DefaultOptions()
+	localPTY, err := localpty.NewLocalPTY(opts)
 	if err != nil {
 		return fmt.Errorf("create local pty: %w", err)
 	}
 
-	s.localPTY = localPTY
+	s.pty = &localPTYAdapter{pty: localPTY}
 	s.Shell = localPTY.Shell()
 	s.State = StateIdle
 	s.CreatedAt = time.Now()
@@ -96,17 +107,145 @@ func (s *Session) Initialize() error {
 
 	// Drain initial output (shell prompt, etc.)
 	buf := make([]byte, 8192)
-	s.localPTY.File().SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-	s.localPTY.Read(buf) // Ignore output
+	s.pty.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	s.pty.Read(buf) // Ignore output
 
 	// Set simple prompt to avoid complex prompts from .bashrc
-	// Also disable history expansion which can interfere with commands
-	s.localPTY.WriteString("PS1='$ '; PROMPT_COMMAND=''; set +H\n")
+	s.pty.WriteString("PS1='$ '; PROMPT_COMMAND=''; set +H\n")
 	time.Sleep(100 * time.Millisecond)
-	s.localPTY.File().SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-	s.localPTY.Read(buf) // Drain the output
+	s.pty.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	s.pty.Read(buf) // Drain the output
 
 	return nil
+}
+
+// initializeSSH sets up an SSH PTY session.
+func (s *Session) initializeSSH() error {
+	if s.Host == "" {
+		return fmt.Errorf("host is required for ssh mode")
+	}
+	if s.User == "" {
+		return fmt.Errorf("user is required for ssh mode")
+	}
+	if s.Port == 0 {
+		s.Port = 22
+	}
+
+	// Build auth methods
+	authCfg := ssh.AuthConfig{
+		UseAgent: true, // Try SSH agent first
+	}
+
+	// Check for key path in config
+	if s.config != nil {
+		for _, srv := range s.config.Servers {
+			if srv.Host == s.Host || srv.Name == s.Host {
+				if srv.KeyPath != "" {
+					authCfg.KeyPath = srv.KeyPath
+				}
+				if srv.Auth.PassphraseEnv != "" {
+					authCfg.KeyPassphrase = os.Getenv(srv.Auth.PassphraseEnv)
+				}
+				break
+			}
+		}
+	}
+
+	authMethods, err := ssh.BuildAuthMethods(authCfg)
+	if err != nil {
+		return fmt.Errorf("build auth methods: %w", err)
+	}
+
+	// Build host key callback
+	hostKeyCallback, err := ssh.BuildHostKeyCallback("")
+	if err != nil {
+		// Fall back to insecure if known_hosts parsing fails
+		hostKeyCallback = ssh.InsecureHostKeyCallback()
+	}
+
+	// Create SSH client
+	clientOpts := ssh.ClientOptions{
+		Host:            s.Host,
+		Port:            s.Port,
+		User:            s.User,
+		AuthMethods:     authMethods,
+		HostKeyCallback: hostKeyCallback,
+		Timeout:         30 * time.Second,
+	}
+
+	client, err := ssh.NewClient(clientOpts)
+	if err != nil {
+		return fmt.Errorf("create ssh client: %w", err)
+	}
+
+	if err := client.Connect(); err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+
+	s.sshClient = client
+
+	// Create SSH PTY
+	ptyOpts := ssh.DefaultSSHPTYOptions()
+	sshPTY, err := ssh.NewSSHPTY(client, ptyOpts)
+	if err != nil {
+		client.Close()
+		return fmt.Errorf("create ssh pty: %w", err)
+	}
+
+	s.pty = &sshPTYAdapter{pty: sshPTY}
+	s.Shell = "/bin/bash" // Assume bash for SSH
+	s.State = StateIdle
+	s.CreatedAt = time.Now()
+	s.LastUsed = time.Now()
+	s.Cwd = "~" // Will be updated on first command
+
+	// Wait for shell to be ready
+	time.Sleep(500 * time.Millisecond)
+
+	// Drain initial output
+	buf := make([]byte, 8192)
+	s.readWithTimeout(buf, 500*time.Millisecond)
+
+	// Set simple prompt
+	s.pty.WriteString("PS1='$ '; PROMPT_COMMAND=''; set +H\n")
+	time.Sleep(200 * time.Millisecond)
+	s.readWithTimeout(buf, 300*time.Millisecond)
+
+	return nil
+}
+
+// readWithTimeout reads from PTY with a timeout.
+func (s *Session) readWithTimeout(buf []byte, timeout time.Duration) (int, error) {
+	s.pty.SetReadDeadline(time.Now().Add(timeout))
+	return s.pty.Read(buf)
+}
+
+// reconnectSSH attempts to reconnect an SSH session.
+func (s *Session) reconnectSSH() error {
+	// Close existing connections
+	if s.pty != nil {
+		s.pty.Close()
+	}
+	if s.sshClient != nil {
+		s.sshClient.Close()
+	}
+
+	// Re-initialize SSH with exponential backoff
+	var lastErr error
+	delays := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
+
+	for i, delay := range delays {
+		if err := s.initializeSSH(); err != nil {
+			lastErr = err
+			if i < len(delays)-1 {
+				time.Sleep(delay)
+			}
+			continue
+		}
+		return nil
+	}
+
+	return fmt.Errorf("reconnect failed after %d attempts: %w", len(delays), lastErr)
 }
 
 // Status returns the current session status.
@@ -114,7 +253,7 @@ func (s *Session) Status() SessionStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return SessionStatus{
+	status := SessionStatus{
 		ID:          s.ID,
 		State:       s.State,
 		Mode:        s.Mode,
@@ -122,6 +261,13 @@ func (s *Session) Status() SessionStatus {
 		Cwd:         s.Cwd,
 		IdleSeconds: int(time.Since(s.LastUsed).Seconds()),
 	}
+
+	if s.Mode == "ssh" {
+		status.Host = s.Host
+		status.User = s.User
+	}
+
+	return status
 }
 
 // Exec executes a command in the session.
@@ -133,8 +279,15 @@ func (s *Session) Exec(command string, timeoutMs int) (*ExecResult, error) {
 		return nil, fmt.Errorf("session is closed")
 	}
 
-	if s.localPTY == nil {
+	if s.pty == nil {
 		return nil, fmt.Errorf("session not initialized")
+	}
+
+	// For SSH sessions, check if we need to reconnect
+	if s.Mode == "ssh" && s.sshClient != nil && !s.sshClient.IsConnected() {
+		if err := s.reconnectSSH(); err != nil {
+			return nil, fmt.Errorf("reconnect failed: %w", err)
+		}
 	}
 
 	s.State = StateRunning
@@ -142,11 +295,10 @@ func (s *Session) Exec(command string, timeoutMs int) (*ExecResult, error) {
 	s.outputBuffer.Reset()
 
 	// Create command with end marker for completion detection
-	// We use a unique marker that will be echoed back when the command completes
 	fullCommand := fmt.Sprintf("%s; echo '%s'$?\n", command, endMarker)
 
 	// Write command to PTY
-	if _, err := s.localPTY.WriteString(fullCommand); err != nil {
+	if _, err := s.pty.WriteString(fullCommand); err != nil {
 		s.State = StateIdle
 		return nil, fmt.Errorf("write command: %w", err)
 	}
@@ -179,13 +331,11 @@ func (s *Session) readOutput(ctx context.Context, command string) (*ExecResult, 
 		}
 
 		// Set short read deadline for non-blocking reads
-		if f := s.localPTY.File(); f != nil {
-			f.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		}
+		s.pty.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 
-		n, err := s.localPTY.Read(buf)
+		n, err := s.pty.Read(buf)
 		if err != nil {
-			if os.IsTimeout(err) || err == io.EOF {
+			if os.IsTimeout(err) || err == io.EOF || isTimeoutError(err) {
 				// Check if we have an end marker
 				output := s.outputBuffer.String()
 				if exitCode, found := s.extractExitCode(output); found {
@@ -238,6 +388,15 @@ func (s *Session) readOutput(ctx context.Context, command string) (*ExecResult, 
 	}
 }
 
+// isTimeoutError checks if error is a timeout (works for both local and SSH).
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "timeout") ||
+		strings.Contains(err.Error(), "i/o timeout")
+}
+
 // ProvideInput provides input to a session waiting for input.
 func (s *Session) ProvideInput(input string) (*ExecResult, error) {
 	s.mu.Lock()
@@ -247,7 +406,7 @@ func (s *Session) ProvideInput(input string) (*ExecResult, error) {
 		return nil, fmt.Errorf("session is not awaiting input (state: %s)", s.State)
 	}
 
-	if s.localPTY == nil {
+	if s.pty == nil {
 		return nil, fmt.Errorf("session not initialized")
 	}
 
@@ -255,7 +414,7 @@ func (s *Session) ProvideInput(input string) (*ExecResult, error) {
 	s.LastUsed = time.Now()
 
 	// Write input followed by newline
-	if _, err := s.localPTY.WriteString(input + "\n"); err != nil {
+	if _, err := s.pty.WriteString(input + "\n"); err != nil {
 		s.State = StateAwaitingInput
 		return nil, fmt.Errorf("write input: %w", err)
 	}
@@ -276,11 +435,11 @@ func (s *Session) Interrupt() error {
 		return fmt.Errorf("session is not running (state: %s)", s.State)
 	}
 
-	if s.localPTY == nil {
+	if s.pty == nil {
 		return fmt.Errorf("session not initialized")
 	}
 
-	if err := s.localPTY.Interrupt(); err != nil {
+	if err := s.pty.Interrupt(); err != nil {
 		return fmt.Errorf("send interrupt: %w", err)
 	}
 
@@ -298,25 +457,33 @@ func (s *Session) Close() error {
 		return nil
 	}
 
-	if s.localPTY != nil {
-		if err := s.localPTY.Close(); err != nil {
-			return fmt.Errorf("close pty: %w", err)
+	var errs []error
+
+	if s.pty != nil {
+		if err := s.pty.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close pty: %w", err))
+		}
+	}
+
+	if s.sshClient != nil {
+		if err := s.sshClient.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close ssh: %w", err))
 		}
 	}
 
 	s.State = StateClosed
+
+	if len(errs) > 0 {
+		return errs[0]
+	}
 	return nil
 }
 
 // extractExitCode extracts the exit code from output if the end marker is present.
-// The marker must appear at the start of a line followed by a number (the exit code).
 func (s *Session) extractExitCode(output string) (int, bool) {
-	// Clean carriage returns for consistent line parsing
 	output = strings.ReplaceAll(output, "\r\n", "\n")
 	output = strings.ReplaceAll(output, "\r", "\n")
 
-	// Look for the marker at the start of a line followed by exit code
-	// Format: ___CMD_END_MARKER___<exit_code>
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -334,29 +501,24 @@ func (s *Session) extractExitCode(output string) (int, bool) {
 
 // cleanOutput removes the command echo, end marker, and carriage returns from output.
 func (s *Session) cleanOutput(output, command string) string {
-	// Remove carriage returns
 	output = strings.ReplaceAll(output, "\r\n", "\n")
 	output = strings.ReplaceAll(output, "\r", "")
 
 	lines := strings.Split(output, "\n")
 	var cleaned []string
 
-	// Track if we've seen the command echo (first occurrence)
 	seenCommand := false
 
 	for _, line := range lines {
-		// Skip the shell prompt line
 		if strings.HasPrefix(line, "$ ") {
 			continue
 		}
 
-		// Skip the first line containing the command we sent (command echo)
 		if command != "" && !seenCommand && strings.Contains(line, command) {
 			seenCommand = true
 			continue
 		}
 
-		// Skip lines containing the end marker
 		if strings.Contains(line, endMarker) {
 			continue
 		}
@@ -364,7 +526,6 @@ func (s *Session) cleanOutput(output, command string) string {
 		cleaned = append(cleaned, line)
 	}
 
-	// Trim leading and trailing empty lines
 	for len(cleaned) > 0 && strings.TrimSpace(cleaned[0]) == "" {
 		cleaned = cleaned[1:]
 	}
@@ -377,13 +538,12 @@ func (s *Session) cleanOutput(output, command string) string {
 
 // updateCwd updates the current working directory.
 func (s *Session) updateCwd() {
-	// Send pwd command and read result
-	s.localPTY.WriteString("pwd\n")
+	s.pty.WriteString("pwd\n")
 	time.Sleep(50 * time.Millisecond)
 
 	buf := make([]byte, 1024)
-	s.localPTY.File().SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-	n, _ := s.localPTY.Read(buf)
+	s.pty.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	n, _ := s.pty.Read(buf)
 
 	if n > 0 {
 		output := string(buf[:n])
@@ -398,22 +558,6 @@ func (s *Session) updateCwd() {
 	}
 }
 
-// drainOutput drains any pending output from the PTY.
-func (s *Session) drainOutput(timeout time.Duration) {
-	buf := make([]byte, 4096)
-	deadline := time.Now().Add(timeout)
-
-	for time.Now().Before(deadline) {
-		if f := s.localPTY.File(); f != nil {
-			f.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
-		}
-		_, err := s.localPTY.Read(buf)
-		if err != nil {
-			break
-		}
-	}
-}
-
 // SessionStatus represents the status of a session.
 type SessionStatus struct {
 	ID          string            `json:"session_id"`
@@ -423,11 +567,13 @@ type SessionStatus struct {
 	Cwd         string            `json:"cwd"`
 	IdleSeconds int               `json:"idle_seconds"`
 	EnvVars     map[string]string `json:"env_vars,omitempty"`
+	Host        string            `json:"host,omitempty"`
+	User        string            `json:"user,omitempty"`
 }
 
 // ExecResult represents the result of command execution.
 type ExecResult struct {
-	Status        string            `json:"status"` // "completed", "awaiting_input", "timeout"
+	Status        string            `json:"status"`
 	ExitCode      *int              `json:"exit_code,omitempty"`
 	Stdout        string            `json:"stdout,omitempty"`
 	Stderr        string            `json:"stderr,omitempty"`

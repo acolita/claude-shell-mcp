@@ -40,6 +40,9 @@ func (m *Manager) Create(opts CreateOptions) (*Session, error) {
 		ID:     id,
 		State:  StateIdle,
 		Mode:   opts.Mode,
+		Host:   opts.Host,
+		Port:   opts.Port,
+		User:   opts.User,
 		config: m.config,
 	}
 
