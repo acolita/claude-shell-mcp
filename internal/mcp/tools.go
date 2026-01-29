@@ -279,6 +279,18 @@ func (s *Server) handleShellSessionStatus(ctx context.Context, req mcp.CallToolR
 	}
 
 	status := sess.Status()
+
+	// Add sudo cache info
+	if s.sudoCache.IsValid(sessionID) {
+		status.SudoCached = true
+		status.SudoExpiresIn = int(s.sudoCache.ExpiresIn(sessionID).Seconds())
+	}
+
+	// Capture current env vars if requested (adds some latency)
+	if status.EnvVars == nil || len(status.EnvVars) == 0 {
+		status.EnvVars = sess.CaptureEnv()
+	}
+
 	return jsonResult(status)
 }
 

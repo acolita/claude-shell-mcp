@@ -255,18 +255,35 @@ func (s *Session) Status() SessionStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	shellInfo := ShellInfo{
+		Path: s.Shell,
+		Type: "bash", // Default assumption
+	}
+	if idx := strings.LastIndex(s.Shell, "/"); idx >= 0 {
+		shellName := s.Shell[idx+1:]
+		shellInfo.Type = shellName
+		shellInfo.SupportsHistory = shellName == "bash" || shellName == "zsh"
+	}
+
 	status := SessionStatus{
-		ID:          s.ID,
-		State:       s.State,
-		Mode:        s.Mode,
-		Shell:       s.Shell,
-		Cwd:         s.Cwd,
-		IdleSeconds: int(time.Since(s.LastUsed).Seconds()),
+		ID:            s.ID,
+		State:         s.State,
+		Mode:          s.Mode,
+		Shell:         s.Shell,
+		ShellInfo:     &shellInfo,
+		Cwd:           s.Cwd,
+		IdleSeconds:   int(time.Since(s.LastUsed).Seconds()),
+		UptimeSeconds: int(time.Since(s.CreatedAt).Seconds()),
+		EnvVars:       s.EnvVars,
+		Connected:     s.pty != nil && s.State != StateClosed,
 	}
 
 	if s.Mode == "ssh" {
 		status.Host = s.Host
 		status.User = s.User
+		if s.sshClient != nil {
+			status.Connected = s.sshClient.IsConnected()
+		}
 	}
 
 	return status
@@ -560,17 +577,121 @@ func (s *Session) updateCwd() {
 	}
 }
 
+// CaptureEnv captures current environment variables from the session.
+func (s *Session) CaptureEnv() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.pty == nil || s.State == StateClosed {
+		return s.EnvVars
+	}
+
+	// Send env command
+	s.pty.WriteString("env\n")
+	time.Sleep(100 * time.Millisecond)
+
+	// Read output
+	buf := make([]byte, 32768) // Env can be large
+	s.pty.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	n, _ := s.pty.Read(buf)
+
+	if n == 0 {
+		return s.EnvVars
+	}
+
+	output := string(buf[:n])
+	envMap := parseEnvOutput(output)
+
+	// Update stored env vars
+	if len(envMap) > 0 {
+		s.EnvVars = envMap
+	}
+
+	return s.EnvVars
+}
+
+// parseEnvOutput parses the output of the 'env' command into a map.
+func parseEnvOutput(output string) map[string]string {
+	result := make(map[string]string)
+	lines := strings.Split(output, "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// Skip empty lines, prompt lines, and the command itself
+		if line == "" || line == "env" || strings.HasPrefix(line, "$ ") {
+			continue
+		}
+
+		// Parse KEY=VALUE format
+		idx := strings.Index(line, "=")
+		if idx > 0 {
+			key := line[:idx]
+			value := line[idx+1:]
+			// Skip internal variables
+			if !strings.HasPrefix(key, "_") && key != "SHLVL" && key != "OLDPWD" {
+				result[key] = value
+			}
+		}
+	}
+
+	return result
+}
+
+// GetShellInfo returns information about the shell being used.
+func (s *Session) GetShellInfo() ShellInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	info := ShellInfo{
+		Path: s.Shell,
+	}
+
+	// Detect shell type from path
+	shellName := s.Shell
+	if idx := strings.LastIndex(shellName, "/"); idx >= 0 {
+		shellName = shellName[idx+1:]
+	}
+
+	switch shellName {
+	case "bash":
+		info.Type = "bash"
+		info.SupportsHistory = true
+	case "zsh":
+		info.Type = "zsh"
+		info.SupportsHistory = true
+	case "sh", "dash", "ash":
+		info.Type = "sh"
+		info.SupportsHistory = false
+	default:
+		info.Type = "unknown"
+	}
+
+	return info
+}
+
+// ShellInfo contains information about the shell.
+type ShellInfo struct {
+	Type            string `json:"type"`
+	Path            string `json:"path"`
+	SupportsHistory bool   `json:"supports_history"`
+}
+
 // SessionStatus represents the status of a session.
 type SessionStatus struct {
-	ID          string            `json:"session_id"`
-	State       State             `json:"state"`
-	Mode        string            `json:"mode"`
-	Shell       string            `json:"shell"`
-	Cwd         string            `json:"cwd"`
-	IdleSeconds int               `json:"idle_seconds"`
-	EnvVars     map[string]string `json:"env_vars,omitempty"`
-	Host        string            `json:"host,omitempty"`
-	User        string            `json:"user,omitempty"`
+	ID             string            `json:"session_id"`
+	State          State             `json:"state"`
+	Mode           string            `json:"mode"`
+	Shell          string            `json:"shell"`
+	ShellInfo      *ShellInfo        `json:"shell_info,omitempty"`
+	Cwd            string            `json:"cwd"`
+	IdleSeconds    int               `json:"idle_seconds"`
+	UptimeSeconds  int               `json:"uptime_seconds"`
+	EnvVars        map[string]string `json:"env_vars,omitempty"`
+	Host           string            `json:"host,omitempty"`
+	User           string            `json:"user,omitempty"`
+	Connected      bool              `json:"connected"`
+	SudoCached     bool              `json:"sudo_cached,omitempty"`
+	SudoExpiresIn  int               `json:"sudo_expires_in_seconds,omitempty"`
 }
 
 // ExecResult represents the result of command execution.

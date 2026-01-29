@@ -79,6 +79,20 @@ func main() {
 	data, _ := json.MarshalIndent(status, "", "  ")
 	fmt.Println(string(data))
 
+	fmt.Println("\n--- Environment capture ---")
+	envVars := sess.CaptureEnv()
+	fmt.Printf("Captured %d environment variables\n", len(envVars))
+	// Print a few key ones
+	keyVars := []string{"HOME", "USER", "SHELL", "PATH", "LANG", "TEST_VAR"}
+	for _, k := range keyVars {
+		if v, ok := envVars[k]; ok {
+			if len(v) > 60 {
+				v = v[:60] + "..."
+			}
+			fmt.Printf("  %s=%s\n", k, v)
+		}
+	}
+
 	fmt.Println("\nSSH test complete!")
 }
 
