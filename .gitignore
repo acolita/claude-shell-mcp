@@ -1,0 +1,28 @@
+# Binaries
+claude-shell-mcp
+*.exe
+dist/
+
+# Test coverage
+coverage.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config (keep example)
+config.yaml
+!config.example.yaml
+
+# Credentials
+*.pem
+*.key
+.env

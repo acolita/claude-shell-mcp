@@ -1,0 +1,57 @@
+# claude-shell-mcp configuration example
+# Copy this file to config.yaml and modify as needed
+
+# Default mode: "local" (local PTY) or "ssh" (remote SSH)
+mode: local
+
+# SSH server configurations (for ssh mode)
+servers:
+  - name: production
+    host: prod.example.com
+    port: 22
+    user: deploy
+    key_path: ~/.ssh/id_ed25519
+    auth:
+      type: key
+      path: ~/.ssh/id_ed25519
+      passphrase_env: SSH_KEY_PASSPHRASE  # optional: env var with key passphrase
+
+  - name: staging
+    host: staging.example.com
+    port: 22
+    user: deploy
+    key_path: ~/.ssh/id_ed25519
+
+# Security settings
+security:
+  # How long to cache sudo password after successful authentication
+  sudo_cache_ttl: 5m
+
+  # Session idle timeout before automatic cleanup
+  idle_timeout: 30m
+
+  # Maximum concurrent sessions per user
+  max_sessions_per_user: 10
+
+# Logging configuration
+logging:
+  # Log level: debug, info, warn, error
+  level: info
+
+  # Sanitize sensitive data (passwords, tokens) from logs
+  # IMPORTANT: Always keep this true in production
+  sanitize: true
+
+# Prompt detection patterns
+prompt_detection:
+  custom_patterns:
+    # Example: Custom password prompt for internal tools
+    - name: vault_password
+      regex: "Vault password:"
+      type: password
+      mask_input: true
+
+    # Example: Custom confirmation prompt
+    - name: deploy_confirm
+      regex: "Deploy to production\\? \\[yes/no\\]"
+      type: confirmation
