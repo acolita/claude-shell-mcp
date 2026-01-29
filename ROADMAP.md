@@ -5,7 +5,7 @@
 
 ### Week 1: Project Scaffold
 - [x] Initialize Go module (`github.com/acolita/claude-shell-mcp`)
-- [ ] Set up CI/CD (GitHub Actions: lint, test, build)
+- [x] Set up CI/CD (GitHub Actions: lint, test, build)
 - [x] Implement MCP protocol handler using `mcp-go`
 - [x] Basic logging infrastructure (slog with JSON)
 - [x] Configuration parsing (YAML/JSON)
@@ -40,7 +40,7 @@
 ### Week 4: Session Lifecycle
 - [x] Persistent SSH sessions across MCP tool calls
 - [x] Heartbeat/keepalive (prevent connection drop)
-- [ ] Automatic reconnection with state recovery
+- [x] Automatic reconnection with state recovery
 - [x] Idle timeout detection and cleanup
 - [x] Session multiplexing (multiple sessions per MCP instance)
 
@@ -94,12 +94,12 @@ exec("sudo whoami") → awaiting_input → provide_input("pass") → completed (
 
 ### Week 8: Audit & Safety
 - [x] Comprehensive audit logging (no secrets)
-- [ ] Command allowlist/blocklist (optional)
-- [ ] Session recording (asciicast format)
+- [x] Command allowlist/blocklist (optional)
+- [x] Session recording (asciicast format)
 - [x] Max session limits per user
-- [ ] Rate limiting on authentication attempts
+- [x] Rate limiting on authentication attempts
 
-**Deliverable:** Security audit passes, no plaintext passwords in logs
+**Deliverable:** Security audit passes, no plaintext passwords in logs ✅
 
 ---
 
@@ -110,7 +110,7 @@ exec("sudo whoami") → awaiting_input → provide_input("pass") → completed (
 - [x] Environment variable capture (`env` parsing)
 - [x] Working directory tracking (`pwd`)
 - [ ] Shell alias/function detection (bash/zsh)
-- [ ] State restoration on session reconnect
+- [x] State restoration on session reconnect
 - [x] `shell_session_status` tool
 
 **Deliverable:** ✅
@@ -121,8 +121,8 @@ Turn 2: echo $DB_HOST  # Returns localhost via state restoration
 
 ### Week 10: Shell Compatibility
 - [x] Bash support (primary)
-- [ ] Zsh support
-- [ ] Fish shell support (nice to have)
+- [x] Zsh support
+- [x] Fish shell support (basic)
 - [x] Shell detection and adaptation
 - [ ] Custom shell initialization (.bashrc sourcing control)
 
@@ -134,20 +134,20 @@ Turn 2: echo $DB_HOST  # Returns localhost via state restoration
 **Goal:** Complex workflows and developer experience
 
 ### Week 11: Complex Interactives
-- [ ] Support for `npm init`, `vue create` wizards
+- [x] Support for `npm init`, `vue create` wizards
 - [ ] Git interactive rebase handling
 - [ ] Docker-compose TTY allocation
-- [ ] Vim/nano detection (block or hand off)
+- [x] Vim/nano detection (block or hand off)
 - [ ] Expect-like scripting for known workflows
 
 **Deliverable:** Successfully runs `npm init` answering all prompts via LLM
 
 ### Week 12: Developer Experience
 - [ ] Configuration file hot-reload
-- [ ] Verbose debug mode (hex PTY dumps)
+- [x] Verbose debug mode (hex PTY dumps)
 - [ ] Local testing mode (mock SSH server)
-- [ ] Claude Desktop integration guide
-- [ ] Docker image for easy deployment
+- [x] Claude Desktop integration guide
+- [x] Docker image for easy deployment
 
 **Deliverable:** 100% test coverage on critical paths, documentation complete
 
@@ -168,8 +168,8 @@ Turn 2: echo $DB_HOST  # Returns localhost via state restoration
 - [ ] Connection pooling optimization
 - [ ] Memory usage profiling (leak detection)
 - [ ] Concurrent session stress testing (100+ sessions)
-- [ ] Binary size optimization (strip, upx)
-- [ ] Cross-compilation (Linux, macOS, Windows)
+- [x] Binary size optimization (strip with -s -w)
+- [x] Cross-compilation (Linux, macOS, Windows)
 
 **Deliverable:** v1.0.0 release, binary < 20MB, handles 50 concurrent sessions
 

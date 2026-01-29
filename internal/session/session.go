@@ -111,13 +111,33 @@ func (s *Session) initializeLocal() error {
 	s.pty.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 	s.pty.Read(buf) // Ignore output
 
-	// Set simple prompt to avoid complex prompts from .bashrc
-	s.pty.WriteString("PS1='$ '; PROMPT_COMMAND=''; set +H\n")
+	// Set simple prompt based on shell type
+	s.pty.WriteString(s.shellPromptCommand())
 	time.Sleep(100 * time.Millisecond)
 	s.pty.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
 	s.pty.Read(buf) // Drain the output
 
 	return nil
+}
+
+// shellPromptCommand returns the command to set a simple prompt for the current shell.
+func (s *Session) shellPromptCommand() string {
+	shellName := s.Shell
+	if idx := strings.LastIndex(shellName, "/"); idx >= 0 {
+		shellName = shellName[idx+1:]
+	}
+
+	switch shellName {
+	case "zsh":
+		// Zsh uses PROMPT; also disable hooks and special features
+		return "PROMPT='$ '; RPROMPT=''; unset precmd_functions; unset preexec_functions; setopt NO_PROMPT_SUBST\n"
+	case "fish":
+		// Fish requires a function definition
+		return "function fish_prompt; echo -n '$ '; end; set -U fish_greeting ''\n"
+	default:
+		// Bash and other POSIX shells
+		return "PS1='$ '; PROMPT_COMMAND=''; set +H\n"
+	}
 }
 
 // initializeSSH sets up an SSH PTY session.
@@ -195,7 +215,7 @@ func (s *Session) initializeSSH() error {
 	}
 
 	s.pty = &sshPTYAdapter{pty: sshPTY}
-	s.Shell = "/bin/bash" // Assume bash for SSH
+	s.Shell = "/bin/bash" // Default assumption, will try to detect
 	s.State = StateIdle
 	s.CreatedAt = time.Now()
 	s.LastUsed = time.Now()
@@ -208,12 +228,35 @@ func (s *Session) initializeSSH() error {
 	buf := make([]byte, 8192)
 	s.readWithTimeout(buf, 500*time.Millisecond)
 
-	// Set simple prompt
-	s.pty.WriteString("PS1='$ '; PROMPT_COMMAND=''; set +H\n")
+	// Try to detect remote shell
+	s.detectRemoteShell()
+
+	// Set simple prompt based on detected shell
+	s.pty.WriteString(s.shellPromptCommand())
 	time.Sleep(200 * time.Millisecond)
 	s.readWithTimeout(buf, 300*time.Millisecond)
 
 	return nil
+}
+
+// detectRemoteShell attempts to detect the remote shell from $SHELL.
+func (s *Session) detectRemoteShell() {
+	s.pty.WriteString("echo $SHELL\n")
+	time.Sleep(100 * time.Millisecond)
+
+	buf := make([]byte, 1024)
+	n, _ := s.readWithTimeout(buf, 200*time.Millisecond)
+	if n > 0 {
+		output := string(buf[:n])
+		lines := strings.Split(output, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "/") && strings.Contains(line, "sh") {
+				s.Shell = line
+				return
+			}
+		}
+	}
 }
 
 // readWithTimeout reads from PTY with a timeout.
@@ -222,8 +265,15 @@ func (s *Session) readWithTimeout(buf []byte, timeout time.Duration) (int, error
 	return s.pty.Read(buf)
 }
 
-// reconnectSSH attempts to reconnect an SSH session.
+// reconnectSSH attempts to reconnect an SSH session with state restoration.
 func (s *Session) reconnectSSH() error {
+	// Save current state before reconnecting
+	savedCwd := s.Cwd
+	savedEnvVars := make(map[string]string)
+	for k, v := range s.EnvVars {
+		savedEnvVars[k] = v
+	}
+
 	// Close existing connections
 	if s.pty != nil {
 		s.pty.Close()
@@ -244,10 +294,49 @@ func (s *Session) reconnectSSH() error {
 			}
 			continue
 		}
+
+		// Restore state after successful reconnect
+		s.restoreState(savedCwd, savedEnvVars)
 		return nil
 	}
 
 	return fmt.Errorf("reconnect failed after %d attempts: %w", len(delays), lastErr)
+}
+
+// restoreState restores cwd and environment variables after reconnect.
+func (s *Session) restoreState(cwd string, envVars map[string]string) {
+	if s.pty == nil {
+		return
+	}
+
+	buf := make([]byte, 4096)
+
+	// Restore working directory
+	if cwd != "" && cwd != "~" {
+		s.pty.WriteString(fmt.Sprintf("cd %q 2>/dev/null\n", cwd))
+		time.Sleep(100 * time.Millisecond)
+		s.readWithTimeout(buf, 200*time.Millisecond)
+		s.Cwd = cwd
+	}
+
+	// Restore critical environment variables (skip internal ones)
+	for key, value := range envVars {
+		// Skip variables that are set by shell or system
+		if key == "PWD" || key == "OLDPWD" || key == "SHLVL" || key == "_" ||
+			key == "TERM" || key == "SHELL" || key == "HOME" || key == "USER" ||
+			key == "LOGNAME" || key == "PATH" || key == "PS1" || key == "PROMPT_COMMAND" {
+			continue
+		}
+		// Export the variable
+		s.pty.WriteString(fmt.Sprintf("export %s=%q\n", key, value))
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Drain any output from the restore commands
+	s.readWithTimeout(buf, 300*time.Millisecond)
+
+	// Update stored env vars
+	s.EnvVars = envVars
 }
 
 // Status returns the current session status.

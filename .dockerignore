@@ -1,0 +1,28 @@
+# Git
+.git
+.gitignore
+
+# Build artifacts
+claude-shell-mcp
+dist/
+coverage.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test files
+test/
+*_test.go
+
+# Documentation
+*.md
+!README.md
+
+# Config examples
+config.example.yaml
+claude-code-config.json
+claude-desktop-config.json

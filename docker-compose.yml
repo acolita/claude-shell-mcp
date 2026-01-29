@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  claude-shell-mcp:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+    image: claude-shell-mcp:latest
+    container_name: claude-shell-mcp
+    stdin_open: true
+    tty: true
+    volumes:
+      # Mount SSH keys (read-only for security)
+      - ~/.ssh:/home/mcp/.ssh:ro
+      # Mount config directory
+      - ./config.yaml:/home/mcp/.config/claude-shell-mcp/config.yaml:ro
+    environment:
+      # Forward SSH agent socket if available
+      - SSH_AUTH_SOCK=${SSH_AUTH_SOCK:-}
+    # For SSH agent forwarding on Linux
+    # volumes:
+    #   - ${SSH_AUTH_SOCK}:/ssh-agent
+    # environment:
+    #   - SSH_AUTH_SOCK=/ssh-agent
+    command: ["--config", "/home/mcp/.config/claude-shell-mcp/config.yaml"]

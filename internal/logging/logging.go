@@ -123,3 +123,67 @@ func Setup(level string, sanitize bool) {
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
 }
+
+// DebugPTYRead logs PTY read data in debug mode.
+func DebugPTYRead(sessionID string, data []byte, n int) {
+	if n > 0 {
+		slog.Debug("pty read",
+			slog.String("session_id", sessionID),
+			slog.Int("bytes", n),
+			slog.String("data", truncateForLog(string(data[:n]), 200)),
+			slog.String("hex", hexDump(data[:n], 64)),
+		)
+	}
+}
+
+// DebugPTYWrite logs PTY write data in debug mode.
+func DebugPTYWrite(sessionID string, data string) {
+	slog.Debug("pty write",
+		slog.String("session_id", sessionID),
+		slog.Int("bytes", len(data)),
+		slog.String("data", truncateForLog(data, 200)),
+		slog.String("hex", hexDump([]byte(data), 64)),
+	)
+}
+
+// DebugPromptDetection logs prompt detection attempts.
+func DebugPromptDetection(sessionID string, buffer string, matched bool, patternName string) {
+	slog.Debug("prompt detection",
+		slog.String("session_id", sessionID),
+		slog.Int("buffer_len", len(buffer)),
+		slog.Bool("matched", matched),
+		slog.String("pattern", patternName),
+		slog.String("buffer_tail", truncateForLog(buffer, 100)),
+	)
+}
+
+// truncateForLog truncates a string for logging.
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+// hexDump returns a hex representation of bytes.
+func hexDump(data []byte, maxLen int) string {
+	if len(data) > maxLen {
+		data = data[:maxLen]
+	}
+
+	result := make([]byte, 0, len(data)*3)
+	for i, b := range data {
+		if i > 0 {
+			result = append(result, ' ')
+		}
+		result = append(result, hexChar(b>>4), hexChar(b&0x0f))
+	}
+	return string(result)
+}
+
+func hexChar(b byte) byte {
+	if b < 10 {
+		return '0' + b
+	}
+	return 'a' + b - 10
+}

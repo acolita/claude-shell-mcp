@@ -10,6 +10,8 @@ const (
 	PromptTypePassword     PromptType = "password"
 	PromptTypeConfirmation PromptType = "confirmation"
 	PromptTypeText         PromptType = "text"
+	PromptTypeEditor       PromptType = "editor"
+	PromptTypePager        PromptType = "pager"
 )
 
 // Pattern represents a prompt detection pattern.
@@ -126,6 +128,46 @@ func DefaultPatterns() []Pattern {
 			Regex:             regexp.MustCompile(`(?i)\[y/n\]\s*$`),
 			Type:              PromptTypeConfirmation,
 			SuggestedResponse: "y",
+		},
+
+		// Editor detection (vim, nano, emacs)
+		{
+			Name:              "vim_editor",
+			Regex:             regexp.MustCompile(`(?m)^~\s*$.*^~\s*$`), // Vim shows ~ for empty lines
+			Type:              PromptTypeEditor,
+			SuggestedResponse: ":q!",
+		},
+		{
+			Name:              "nano_editor",
+			Regex:             regexp.MustCompile(`(?i)GNU nano`),
+			Type:              PromptTypeEditor,
+			SuggestedResponse: "Ctrl+X",
+		},
+		{
+			Name:              "vim_command_mode",
+			Regex:             regexp.MustCompile(`(?m)^:.*$`), // Vim command mode
+			Type:              PromptTypeEditor,
+			SuggestedResponse: ":q!",
+		},
+
+		// Pager detection (less, more)
+		{
+			Name:              "less_pager",
+			Regex:             regexp.MustCompile(`(?i)\(END\)\s*$`),
+			Type:              PromptTypePager,
+			SuggestedResponse: "q",
+		},
+		{
+			Name:              "more_pager",
+			Regex:             regexp.MustCompile(`--More--`),
+			Type:              PromptTypePager,
+			SuggestedResponse: "q",
+		},
+		{
+			Name:              "man_pager",
+			Regex:             regexp.MustCompile(`Manual page.*line \d+`),
+			Type:              PromptTypePager,
+			SuggestedResponse: "q",
 		},
 	}
 }

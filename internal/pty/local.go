@@ -36,17 +36,58 @@ type PTYOptions struct {
 // DefaultOptions returns default PTY options.
 // Uses TERM=dumb to prevent ANSI escape codes in output.
 func DefaultOptions() PTYOptions {
+	shell := detectShell()
 	return PTYOptions{
-		Shell: detectShell(),
+		Shell: shell,
 		Term:  "dumb",
 		Rows:  24,
 		Cols:  120,
-		Env: []string{
-			"PS1=$ ",           // Simple prompt without colors
-			"PROMPT_COMMAND=",  // Disable prompt command
-			"NO_COLOR=1",       // Hint to programs to disable colors
-		},
+		Env:   ShellEnv(shell),
 	}
+}
+
+// ShellEnv returns environment variables for the given shell.
+func ShellEnv(shell string) []string {
+	env := []string{
+		"NO_COLOR=1", // Hint to programs to disable colors
+	}
+
+	// Detect shell type from path
+	shellName := shell
+	if idx := len(shell) - 1; idx >= 0 {
+		for i := len(shell) - 1; i >= 0; i-- {
+			if shell[i] == '/' {
+				shellName = shell[i+1:]
+				break
+			}
+		}
+	}
+
+	switch shellName {
+	case "zsh":
+		// Zsh uses PROMPT instead of PS1 for left prompt
+		env = append(env,
+			"PROMPT=$ ",         // Simple prompt for zsh
+			"PS1=$ ",            // Also set PS1 for compatibility
+			"PROMPT_COMMAND=",   // Disable prompt command
+			"precmd_functions=", // Disable zsh precmd hooks
+			"RPROMPT=",          // Disable right prompt
+		)
+	case "fish":
+		// Fish uses functions, we'll handle it differently
+		env = append(env,
+			"PS1=$ ",
+			"fish_greeting=", // Disable greeting
+		)
+	default:
+		// Bash and other POSIX shells
+		env = append(env,
+			"PS1=$ ",
+			"PROMPT_COMMAND=",
+		)
+	}
+
+	return env
 }
 
 // NewLocalPTY creates a new local PTY session.

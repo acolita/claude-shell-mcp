@@ -48,6 +48,10 @@ func (d *Detector) AddPatternFromConfig(name, regex, promptType string, maskInpu
 		pt = PromptTypePassword
 	case "confirmation":
 		pt = PromptTypeConfirmation
+	case "editor":
+		pt = PromptTypeEditor
+	case "pager":
+		pt = PromptTypePager
 	default:
 		pt = PromptTypeText
 	}
@@ -142,6 +146,16 @@ func (det *Detection) IsConfirmation() bool {
 	return det.Pattern.Type == PromptTypeConfirmation
 }
 
+// IsEditor returns true if the detection is for an interactive editor.
+func (det *Detection) IsEditor() bool {
+	return det.Pattern.Type == PromptTypeEditor
+}
+
+// IsPager returns true if the detection is for a pager (less, more).
+func (det *Detection) IsPager() bool {
+	return det.Pattern.Type == PromptTypePager
+}
+
 // Hint returns a human-readable hint for the prompt.
 func (det *Detection) Hint() string {
 	switch det.Pattern.Type {
@@ -152,6 +166,13 @@ func (det *Detection) Hint() string {
 			return "Confirmation required. Suggested response: " + det.SuggestedResponse
 		}
 		return "Confirmation required."
+	case PromptTypeEditor:
+		return "Interactive editor detected. Use shell_interrupt to exit, or provide exit command (e.g., ':q!' for vim, 'Ctrl+X' for nano)."
+	case PromptTypePager:
+		if det.SuggestedResponse != "" {
+			return "Pager detected. Press '" + det.SuggestedResponse + "' to quit, or use shell_interrupt."
+		}
+		return "Pager detected. Use 'q' to quit or shell_interrupt."
 	default:
 		return "Input required."
 	}
