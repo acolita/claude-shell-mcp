@@ -178,12 +178,32 @@ func (s *Server) handleShellExec(ctx context.Context, req mcp.CallToolRequest) (
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
+	// If a sudo password prompt is detected and we have a cached password, auto-inject it
+	if result.Status == "awaiting_input" && result.PromptType == "password" {
+		if cachedPwd := s.sudoCache.Get(sessionID); cachedPwd != nil {
+			slog.Info("auto-injecting cached sudo password",
+				slog.String("session_id", sessionID),
+			)
+
+			// Provide the cached password
+			result, err = sess.ProvideInput(string(cachedPwd))
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+
+			// Mark that we used cached sudo
+			result.SudoAuthenticated = true
+			result.SudoExpiresInSeconds = int(s.sudoCache.ExpiresIn(sessionID).Seconds())
+		}
+	}
+
 	return jsonResult(result)
 }
 
 func (s *Server) handleShellProvideInput(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	sessionID := mcp.ParseString(req, "session_id", "")
 	input := mcp.ParseString(req, "input", "")
+	cacheForSudo := mcp.ParseBoolean(req, "cache_for_sudo", false)
 
 	if sessionID == "" {
 		return mcp.NewToolResultError("session_id is required"), nil
@@ -196,11 +216,28 @@ func (s *Server) handleShellProvideInput(ctx context.Context, req mcp.CallToolRe
 
 	slog.Info("providing input to session",
 		slog.String("session_id", sessionID),
+		slog.Bool("cache_for_sudo", cacheForSudo),
 	)
+
+	// Cache the password if requested (for sudo prompts)
+	if cacheForSudo && input != "" {
+		s.sudoCache.Set(sessionID, []byte(input))
+		slog.Info("cached sudo password",
+			slog.String("session_id", sessionID),
+			slog.Duration("ttl", s.sudoCache.ExpiresIn(sessionID)),
+		)
+	}
 
 	result, err := sess.ProvideInput(input)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	// Add sudo authentication info to result
+	if cacheForSudo {
+		result.SudoAuthenticated = true
+		expiresIn := s.sudoCache.ExpiresIn(sessionID)
+		result.SudoExpiresInSeconds = int(expiresIn.Seconds())
 	}
 
 	return jsonResult(result)

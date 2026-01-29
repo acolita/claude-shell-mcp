@@ -573,15 +573,17 @@ type SessionStatus struct {
 
 // ExecResult represents the result of command execution.
 type ExecResult struct {
-	Status        string            `json:"status"`
-	ExitCode      *int              `json:"exit_code,omitempty"`
-	Stdout        string            `json:"stdout,omitempty"`
-	Stderr        string            `json:"stderr,omitempty"`
-	Cwd           string            `json:"cwd,omitempty"`
-	EnvVars       map[string]string `json:"env_vars,omitempty"`
-	PromptType    string            `json:"prompt_type,omitempty"`
-	PromptText    string            `json:"prompt_text,omitempty"`
-	ContextBuffer string            `json:"context_buffer,omitempty"`
-	MaskInput     bool              `json:"mask_input,omitempty"`
-	Hint          string            `json:"hint,omitempty"`
+	Status               string            `json:"status"`
+	ExitCode             *int              `json:"exit_code,omitempty"`
+	Stdout               string            `json:"stdout,omitempty"`
+	Stderr               string            `json:"stderr,omitempty"`
+	Cwd                  string            `json:"cwd,omitempty"`
+	EnvVars              map[string]string `json:"env_vars,omitempty"`
+	PromptType           string            `json:"prompt_type,omitempty"`
+	PromptText           string            `json:"prompt_text,omitempty"`
+	ContextBuffer        string            `json:"context_buffer,omitempty"`
+	MaskInput            bool              `json:"mask_input,omitempty"`
+	Hint                 string            `json:"hint,omitempty"`
+	SudoAuthenticated    bool              `json:"sudo_authenticated,omitempty"`
+	SudoExpiresInSeconds int               `json:"sudo_expires_in_seconds,omitempty"`
 }

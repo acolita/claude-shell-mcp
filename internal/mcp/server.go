@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/acolita/claude-shell-mcp/internal/config"
+	"github.com/acolita/claude-shell-mcp/internal/security"
 	"github.com/acolita/claude-shell-mcp/internal/session"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -13,6 +14,7 @@ import (
 type Server struct {
 	mcpServer      *server.MCPServer
 	sessionManager *session.Manager
+	sudoCache      *security.SudoCache
 	config         *config.Config
 }
 
@@ -25,9 +27,16 @@ func NewServer(cfg *config.Config) *Server {
 		server.WithLogging(),
 	)
 
+	// Use sudo cache TTL from config, or default
+	sudoTTL := cfg.Security.SudoCacheTTL
+	if sudoTTL == 0 {
+		sudoTTL = security.DefaultSudoTTL
+	}
+
 	s := &Server{
 		mcpServer:      mcpServer,
 		sessionManager: session.NewManager(cfg),
+		sudoCache:      security.NewSudoCache(sudoTTL),
 		config:         cfg,
 	}
 
