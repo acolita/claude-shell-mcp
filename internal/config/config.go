@@ -15,6 +15,7 @@ type Config struct {
 	Security        SecurityConfig  `yaml:"security"`
 	Logging         LoggingConfig   `yaml:"logging"`
 	Recording       RecordingConfig `yaml:"recording"`
+	Shell           ShellConfig     `yaml:"shell"`
 	PromptDetection PromptConfig    `yaml:"prompt_detection"`
 	Mode            string          `yaml:"mode"` // "ssh" or "local"
 }
@@ -59,6 +60,12 @@ type RecordingConfig struct {
 	Path    string `yaml:"path"`    // directory to store recordings
 }
 
+// ShellConfig defines shell behavior settings.
+type ShellConfig struct {
+	SourceRC bool   `yaml:"source_rc"` // source .bashrc/.zshrc (default: true)
+	Path     string `yaml:"path"`      // custom shell path (overrides detection)
+}
+
 // PromptConfig defines prompt detection settings.
 type PromptConfig struct {
 	CustomPatterns []PatternConfig `yaml:"custom_patterns"`
@@ -84,6 +91,9 @@ func DefaultConfig() *Config {
 		Logging: LoggingConfig{
 			Level:    "info",
 			Sanitize: true,
+		},
+		Shell: ShellConfig{
+			SourceRC: true, // Source shell rc files by default
 		},
 	}
 }

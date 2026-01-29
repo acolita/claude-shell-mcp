@@ -349,9 +349,14 @@ func (s *Server) handleShellSessionStatus(ctx context.Context, req mcp.CallToolR
 		status.SudoExpiresIn = int(s.sudoCache.ExpiresIn(sessionID).Seconds())
 	}
 
-	// Capture current env vars if requested (adds some latency)
+	// Capture current env vars if not already populated
 	if status.EnvVars == nil || len(status.EnvVars) == 0 {
 		status.EnvVars = sess.CaptureEnv()
+	}
+
+	// Capture aliases if not already populated
+	if status.Aliases == nil || len(status.Aliases) == 0 {
+		status.Aliases = sess.CaptureAliases()
 	}
 
 	return jsonResult(status)

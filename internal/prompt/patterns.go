@@ -169,5 +169,93 @@ func DefaultPatterns() []Pattern {
 			Type:              PromptTypePager,
 			SuggestedResponse: "q",
 		},
+
+		// Docker prompts
+		{
+			Name:              "docker_remove_confirm",
+			Regex:             regexp.MustCompile(`(?i)are you sure you want to remove.*\[y/N\]`),
+			Type:              PromptTypeConfirmation,
+			SuggestedResponse: "y",
+		},
+		{
+			Name:              "docker_prune_confirm",
+			Regex:             regexp.MustCompile(`(?i)are you sure you want to continue\?\s*\[y/N\]`),
+			Type:              PromptTypeConfirmation,
+			SuggestedResponse: "y",
+		},
+
+		// Database CLI prompts
+		{
+			Name:  "mysql_prompt",
+			Regex: regexp.MustCompile(`mysql>\s*$`),
+			Type:  PromptTypeText,
+		},
+		{
+			Name:  "postgres_prompt",
+			Regex: regexp.MustCompile(`\w+=>\s*$`), // psql prompt like: dbname=>
+			Type:  PromptTypeText,
+		},
+		{
+			Name:  "redis_prompt",
+			Regex: regexp.MustCompile(`\d+\.\d+\.\d+\.\d+:\d+>\s*$`), // redis-cli prompt
+			Type:  PromptTypeText,
+		},
+		{
+			Name:  "mongo_prompt",
+			Regex: regexp.MustCompile(`>\s*$`), // MongoDB prompt (simplified)
+			Type:  PromptTypeText,
+		},
+
+		// Python/Ruby/Node REPL prompts
+		{
+			Name:  "python_prompt",
+			Regex: regexp.MustCompile(`>>>\s*$`),
+			Type:  PromptTypeText,
+		},
+		{
+			Name:  "python_continuation",
+			Regex: regexp.MustCompile(`\.\.\.\s*$`),
+			Type:  PromptTypeText,
+		},
+		{
+			Name:  "ruby_irb_prompt",
+			Regex: regexp.MustCompile(`irb\([^)]+\):\d+:\d+>\s*$`),
+			Type:  PromptTypeText,
+		},
+		{
+			Name:  "node_repl_prompt",
+			Regex: regexp.MustCompile(`>\s*$`), // Node REPL (simplified)
+			Type:  PromptTypeText,
+		},
+
+		// Overwrite/replace confirmations
+		{
+			Name:              "overwrite_confirm",
+			Regex:             regexp.MustCompile(`(?i)overwrite.*\?\s*\[y/N\]`),
+			Type:              PromptTypeConfirmation,
+			SuggestedResponse: "y",
+		},
+		{
+			Name:              "replace_confirm",
+			Regex:             regexp.MustCompile(`(?i)replace.*\?\s*\[y/N\]`),
+			Type:              PromptTypeConfirmation,
+			SuggestedResponse: "y",
+		},
+
+		// SSH/SCP prompts
+		{
+			Name:      "ssh_passphrase",
+			Regex:     regexp.MustCompile(`(?i)enter passphrase for key.*:\s*$`),
+			Type:      PromptTypePassword,
+			MaskInput: true,
+		},
+
+		// curl/wget prompts
+		{
+			Name:              "curl_insecure",
+			Regex:             regexp.MustCompile(`(?i)proceed anyway\?\s*\[y/N\]`),
+			Type:              PromptTypeConfirmation,
+			SuggestedResponse: "y",
+		},
 	}
 }

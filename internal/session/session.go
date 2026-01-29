@@ -38,6 +38,7 @@ type Session struct {
 	Shell     string
 	Cwd       string
 	EnvVars   map[string]string
+	Aliases   map[string]string // Shell aliases
 	CreatedAt time.Time
 	LastUsed  time.Time
 
@@ -86,6 +87,15 @@ func (s *Session) Initialize() error {
 // initializeLocal sets up a local PTY session.
 func (s *Session) initializeLocal() error {
 	opts := localpty.DefaultOptions()
+
+	// Apply shell config if available
+	if s.config != nil {
+		if s.config.Shell.Path != "" {
+			opts.Shell = s.config.Shell.Path
+		}
+		opts.NoRC = !s.config.Shell.SourceRC
+	}
+
 	localPTY, err := localpty.NewLocalPTY(opts)
 	if err != nil {
 		return fmt.Errorf("create local pty: %w", err)
@@ -364,6 +374,7 @@ func (s *Session) Status() SessionStatus {
 		IdleSeconds:   int(time.Since(s.LastUsed).Seconds()),
 		UptimeSeconds: int(time.Since(s.CreatedAt).Seconds()),
 		EnvVars:       s.EnvVars,
+		Aliases:       s.Aliases,
 		Connected:     s.pty != nil && s.State != StateClosed,
 	}
 
@@ -726,6 +737,69 @@ func parseEnvOutput(output string) map[string]string {
 	return result
 }
 
+// CaptureAliases captures current shell aliases from the session.
+func (s *Session) CaptureAliases() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.pty == nil || s.State == StateClosed {
+		return s.Aliases
+	}
+
+	// Send alias command
+	s.pty.WriteString("alias\n")
+	time.Sleep(100 * time.Millisecond)
+
+	// Read output
+	buf := make([]byte, 16384)
+	s.pty.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	n, _ := s.pty.Read(buf)
+
+	if n == 0 {
+		return s.Aliases
+	}
+
+	output := string(buf[:n])
+	aliasMap := parseAliasOutput(output)
+
+	// Update stored aliases
+	if len(aliasMap) > 0 {
+		s.Aliases = aliasMap
+	}
+
+	return s.Aliases
+}
+
+// parseAliasOutput parses the output of the 'alias' command into a map.
+func parseAliasOutput(output string) map[string]string {
+	result := make(map[string]string)
+	lines := strings.Split(output, "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// Skip empty lines, prompt lines, and the command itself
+		if line == "" || line == "alias" || strings.HasPrefix(line, "$ ") {
+			continue
+		}
+
+		// Parse alias formats:
+		// bash: alias name='value'
+		// zsh:  name='value' or name=value
+		line = strings.TrimPrefix(line, "alias ")
+
+		idx := strings.Index(line, "=")
+		if idx > 0 {
+			name := line[:idx]
+			value := line[idx+1:]
+			// Remove surrounding quotes if present
+			value = strings.Trim(value, "'\"")
+			result[name] = value
+		}
+	}
+
+	return result
+}
+
 // GetShellInfo returns information about the shell being used.
 func (s *Session) GetShellInfo() ShellInfo {
 	s.mu.Lock()
@@ -776,6 +850,7 @@ type SessionStatus struct {
 	IdleSeconds    int               `json:"idle_seconds"`
 	UptimeSeconds  int               `json:"uptime_seconds"`
 	EnvVars        map[string]string `json:"env_vars,omitempty"`
+	Aliases        map[string]string `json:"aliases,omitempty"`
 	Host           string            `json:"host,omitempty"`
 	User           string            `json:"user,omitempty"`
 	Connected      bool              `json:"connected"`

@@ -109,7 +109,7 @@ exec("sudo whoami") → awaiting_input → provide_input("pass") → completed (
 ### Week 9: State Snapshots
 - [x] Environment variable capture (`env` parsing)
 - [x] Working directory tracking (`pwd`)
-- [ ] Shell alias/function detection (bash/zsh)
+- [x] Shell alias/function detection (bash/zsh)
 - [x] State restoration on session reconnect
 - [x] `shell_session_status` tool
 
@@ -124,7 +124,7 @@ Turn 2: echo $DB_HOST  # Returns localhost via state restoration
 - [x] Zsh support
 - [x] Fish shell support (basic)
 - [x] Shell detection and adaptation
-- [ ] Custom shell initialization (.bashrc sourcing control)
+- [x] Custom shell initialization (.bashrc sourcing control)
 
 **Deliverable:** Works on Ubuntu (bash), macOS (zsh), Alpine (ash)
 
@@ -157,17 +157,17 @@ Turn 2: echo $DB_HOST  # Returns localhost via state restoration
 **Goal:** Production deployment and ecosystem integration
 
 ### Week 13: Claude Code Integration
-- [ ] Test with Claude Code (not just Claude Desktop)
+- [x] Test with Claude Code (not just Claude Desktop)
 - [ ] Work around Claude Code bash limitations
 - [ ] Optimize for Claude Code's specific tool calling patterns
-- [ ] Example workflows (deployment, debugging, log analysis)
+- [x] Example workflows (deployment, debugging, log analysis)
 
 **Deliverable:** End-to-end demo: "Deploy my app" across 3 servers with git pull, npm install, pm2 restart
 
 ### Week 14: Performance & Scale
 - [ ] Connection pooling optimization
-- [ ] Memory usage profiling (leak detection)
-- [ ] Concurrent session stress testing (100+ sessions)
+- [x] Memory usage profiling (leak detection)
+- [x] Concurrent session stress testing (100+ sessions)
 - [x] Binary size optimization (strip with -s -w)
 - [x] Cross-compilation (Linux, macOS, Windows)
 

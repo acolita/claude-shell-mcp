@@ -25,12 +25,13 @@ type LocalPTY struct {
 
 // PTYOptions configures PTY allocation.
 type PTYOptions struct {
-	Shell  string // Shell to use (defaults to user's shell or /bin/bash)
-	Term   string // Terminal type (default: xterm-256color)
-	Rows   uint16 // Terminal rows (default: 24)
-	Cols   uint16 // Terminal columns (default: 80)
-	Dir    string // Initial working directory
+	Shell  string   // Shell to use (defaults to user's shell or /bin/bash)
+	Term   string   // Terminal type (default: xterm-256color)
+	Rows   uint16   // Terminal rows (default: 24)
+	Cols   uint16   // Terminal columns (default: 80)
+	Dir    string   // Initial working directory
 	Env    []string // Additional environment variables
+	NoRC   bool     // Don't source rc files (--norc for bash, --no-rcs for zsh)
 }
 
 // DefaultOptions returns default PTY options.
@@ -105,8 +106,9 @@ func NewLocalPTY(opts PTYOptions) (*LocalPTY, error) {
 		opts.Cols = 80
 	}
 
-	// Create shell command
-	cmd := exec.Command(opts.Shell)
+	// Build shell command with appropriate flags
+	args := noRCFlags(opts.Shell, opts.NoRC)
+	cmd := exec.Command(opts.Shell, args...)
 
 	// Set working directory if specified
 	if opts.Dir != "" {
@@ -243,4 +245,32 @@ func detectShell() string {
 	}
 
 	return "/bin/sh"
+}
+
+// noRCFlags returns shell arguments to skip rc file sourcing.
+func noRCFlags(shell string, noRC bool) []string {
+	if !noRC {
+		return nil
+	}
+
+	// Get shell name from path
+	shellName := shell
+	for i := len(shell) - 1; i >= 0; i-- {
+		if shell[i] == '/' {
+			shellName = shell[i+1:]
+			break
+		}
+	}
+
+	switch shellName {
+	case "bash":
+		return []string{"--norc", "--noprofile"}
+	case "zsh":
+		return []string{"--no-rcs", "--no-globalrcs"}
+	case "fish":
+		return []string{"--no-config"}
+	default:
+		// POSIX sh doesn't have a standard --norc flag
+		return nil
+	}
 }

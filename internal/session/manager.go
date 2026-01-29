@@ -98,6 +98,13 @@ func (m *Manager) List() []string {
 	return ids
 }
 
+// SessionCount returns the number of active sessions.
+func (m *Manager) SessionCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.sessions)
+}
+
 // generateSessionID generates a unique session ID.
 func generateSessionID() string {
 	b := make([]byte, 8)
