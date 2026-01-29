@@ -1,0 +1,131 @@
+// Package prompt provides interactive prompt detection for shell sessions.
+package prompt
+
+import "regexp"
+
+// PromptType indicates the type of prompt detected.
+type PromptType string
+
+const (
+	PromptTypePassword     PromptType = "password"
+	PromptTypeConfirmation PromptType = "confirmation"
+	PromptTypeText         PromptType = "text"
+)
+
+// Pattern represents a prompt detection pattern.
+type Pattern struct {
+	Name              string
+	Regex             *regexp.Regexp
+	Type              PromptType
+	MaskInput         bool
+	SuggestedResponse string
+}
+
+// DefaultPatterns returns the built-in prompt patterns.
+func DefaultPatterns() []Pattern {
+	return []Pattern{
+		// Sudo password prompts
+		{
+			Name:      "sudo_password",
+			Regex:     regexp.MustCompile(`(?i)\[sudo\]\s+password\s+for\s+\w+:\s*$`),
+			Type:      PromptTypePassword,
+			MaskInput: true,
+		},
+		{
+			Name:      "sudo_password_generic",
+			Regex:     regexp.MustCompile(`(?i)password:\s*$`),
+			Type:      PromptTypePassword,
+			MaskInput: true,
+		},
+
+		// SSH host key confirmation
+		{
+			Name:              "ssh_host_key",
+			Regex:             regexp.MustCompile(`(?i)are you sure you want to continue connecting \(yes/no(/\[fingerprint\])?\)\?`),
+			Type:              PromptTypeConfirmation,
+			SuggestedResponse: "yes",
+		},
+		{
+			Name:              "ssh_host_key_ecdsa",
+			Regex:             regexp.MustCompile(`(?i)are you sure you want to continue connecting \(yes/no\)\?`),
+			Type:              PromptTypeConfirmation,
+			SuggestedResponse: "yes",
+		},
+
+		// Package manager confirmations
+		{
+			Name:              "apt_confirmation",
+			Regex:             regexp.MustCompile(`(?i)do you want to continue\?\s*\[Y/n\]\s*$`),
+			Type:              PromptTypeConfirmation,
+			SuggestedResponse: "Y",
+		},
+		{
+			Name:              "yum_confirmation",
+			Regex:             regexp.MustCompile(`(?i)is this ok \[y/d/N\]:\s*$`),
+			Type:              PromptTypeConfirmation,
+			SuggestedResponse: "y",
+		},
+		{
+			Name:              "pacman_confirmation",
+			Regex:             regexp.MustCompile(`(?i)proceed with installation\?\s*\[Y/n\]\s*$`),
+			Type:              PromptTypeConfirmation,
+			SuggestedResponse: "Y",
+		},
+
+		// npm/node prompts
+		{
+			Name:  "npm_init_name",
+			Regex: regexp.MustCompile(`(?i)package name:\s*\([^)]*\)\s*$`),
+			Type:  PromptTypeText,
+		},
+		{
+			Name:  "npm_init_version",
+			Regex: regexp.MustCompile(`(?i)version:\s*\([^)]*\)\s*$`),
+			Type:  PromptTypeText,
+		},
+		{
+			Name:  "npm_init_description",
+			Regex: regexp.MustCompile(`(?i)description:\s*$`),
+			Type:  PromptTypeText,
+		},
+		{
+			Name:  "npm_init_entry",
+			Regex: regexp.MustCompile(`(?i)entry point:\s*\([^)]*\)\s*$`),
+			Type:  PromptTypeText,
+		},
+		{
+			Name:              "npm_ok",
+			Regex:             regexp.MustCompile(`(?i)is this ok\?\s*\(yes\)\s*$`),
+			Type:              PromptTypeConfirmation,
+			SuggestedResponse: "yes",
+		},
+
+		// Git prompts
+		{
+			Name:      "git_username",
+			Regex:     regexp.MustCompile(`(?i)username for '.*':\s*$`),
+			Type:      PromptTypeText,
+			MaskInput: false,
+		},
+		{
+			Name:      "git_password",
+			Regex:     regexp.MustCompile(`(?i)password for '.*':\s*$`),
+			Type:      PromptTypePassword,
+			MaskInput: true,
+		},
+
+		// Generic yes/no
+		{
+			Name:              "yes_no_generic",
+			Regex:             regexp.MustCompile(`(?i)\[yes/no\]\s*$`),
+			Type:              PromptTypeConfirmation,
+			SuggestedResponse: "yes",
+		},
+		{
+			Name:              "y_n_generic",
+			Regex:             regexp.MustCompile(`(?i)\[y/n\]\s*$`),
+			Type:              PromptTypeConfirmation,
+			SuggestedResponse: "y",
+		},
+	}
+}

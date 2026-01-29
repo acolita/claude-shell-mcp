@@ -43,6 +43,11 @@ func (m *Manager) Create(opts CreateOptions) (*Session, error) {
 		config: m.config,
 	}
 
+	// Initialize the session (creates PTY/SSH connection)
+	if err := sess.Initialize(); err != nil {
+		return nil, fmt.Errorf("initialize session: %w", err)
+	}
+
 	m.sessions[id] = sess
 	return sess, nil
 }
