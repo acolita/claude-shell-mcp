@@ -17,6 +17,7 @@ type AuthConfig struct {
 	KeyPath       string // Path to private key file
 	KeyPassphrase string // Passphrase for encrypted keys
 	UseAgent      bool   // Use SSH agent for authentication
+	Password      string // Password for password authentication
 }
 
 // BuildAuthMethods constructs SSH auth methods from config.
@@ -39,8 +40,8 @@ func BuildAuthMethods(cfg AuthConfig) ([]ssh.AuthMethod, error) {
 		methods = append(methods, keyAuth)
 	}
 
-	// Try default key locations if no explicit key specified
-	if cfg.KeyPath == "" {
+	// Try default key locations if no explicit key specified and no password
+	if cfg.KeyPath == "" && cfg.Password == "" {
 		defaultKeys := []string{
 			"~/.ssh/id_ed25519",
 			"~/.ssh/id_rsa",
@@ -55,6 +56,12 @@ func BuildAuthMethods(cfg AuthConfig) ([]ssh.AuthMethod, error) {
 				}
 			}
 		}
+	}
+
+	// Add password authentication if provided
+	if cfg.Password != "" {
+		methods = append(methods, PasswordAuth(cfg.Password))
+		methods = append(methods, KeyboardInteractiveAuth(cfg.Password))
 	}
 
 	if len(methods) == 0 {

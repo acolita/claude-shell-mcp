@@ -42,9 +42,10 @@ type Session struct {
 	LastUsed  time.Time
 
 	// SSH connection info (for ssh mode)
-	Host string
-	Port int
-	User string
+	Host     string
+	Port     int
+	User     string
+	Password string // For password-based auth (not persisted)
 
 	// Internal fields
 	config         *config.Config
@@ -134,6 +135,7 @@ func (s *Session) initializeSSH() error {
 	// Build auth methods
 	authCfg := ssh.AuthConfig{
 		UseAgent: true, // Try SSH agent first
+		Password: s.Password,
 	}
 
 	// Check for key path in config

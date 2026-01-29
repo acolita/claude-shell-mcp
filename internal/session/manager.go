@@ -37,13 +37,14 @@ func (m *Manager) Create(opts CreateOptions) (*Session, error) {
 
 	id := generateSessionID()
 	sess := &Session{
-		ID:     id,
-		State:  StateIdle,
-		Mode:   opts.Mode,
-		Host:   opts.Host,
-		Port:   opts.Port,
-		User:   opts.User,
-		config: m.config,
+		ID:       id,
+		State:    StateIdle,
+		Mode:     opts.Mode,
+		Host:     opts.Host,
+		Port:     opts.Port,
+		User:     opts.User,
+		Password: opts.Password,
+		config:   m.config,
 	}
 
 	// Initialize the session (creates PTY/SSH connection)
@@ -106,8 +107,9 @@ func generateSessionID() string {
 
 // CreateOptions defines options for creating a session.
 type CreateOptions struct {
-	Mode string // "local" or "ssh"
-	Host string
-	Port int
-	User string
+	Mode     string // "local" or "ssh"
+	Host     string
+	Port     int
+	User     string
+	Password string // For password-based SSH authentication
 }
