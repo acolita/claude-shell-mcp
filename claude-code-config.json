@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "shell": {
+      "command": "claude-shell-mcp",
+      "args": ["--config", "~/.config/claude-shell-mcp/config.yaml"],
+      "env": {}
+    }
+  }
+}

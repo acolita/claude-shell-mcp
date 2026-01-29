@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "shell": {
+      "command": "/usr/local/bin/claude-shell-mcp",
+      "args": ["--mode", "local"],
+      "env": {}
+    },
+    "remote-shell": {
+      "command": "/usr/local/bin/claude-shell-mcp",
+      "args": ["--config", "/path/to/config.yaml"],
+      "env": {
+        "SSH_AUTH_SOCK": "/run/user/1000/keyring/ssh"
+      }
+    }
+  }
+}
