@@ -4,7 +4,7 @@
 
 **claude-shell-mcp** is a Model Context Protocol (MCP) server written in Go that provides persistent, interactive shell sessions over SSH. It enables LLM agents to operate remote terminals with full transparency, handling sudo authentication, environment persistence, and interactive CLI prompts through an explicit "interrupt & resume" pattern.
 
-**Version:** 0.1.0-alpha
+**Version:** 1.0.0
 **Protocol:** MCP 2025-03-26
 **Transport:** stdio (primary), SSE (optional)
 
@@ -131,6 +131,7 @@ claude-shell-mcp/
 
 ## MCP Tools
 
+### Shell Session Tools
 | Tool | Purpose |
 |------|---------|
 | `shell_session_create` | Initialize a persistent SSH/local session |
@@ -139,6 +140,33 @@ claude-shell-mcp/
 | `shell_interrupt` | Send SIGINT (Ctrl+C) to break hanging processes |
 | `shell_session_status` | Check session health, cwd, environment |
 | `shell_session_close` | Graceful session cleanup |
+
+### File Transfer Tools (SCP/SFTP)
+| Tool | Purpose |
+|------|---------|
+| `shell_file_get` | Download a file from remote session (returns content or saves locally) |
+| `shell_file_put` | Upload a file to remote session (from content or local file) |
+| `shell_dir_get` | Download a directory recursively with glob pattern support |
+| `shell_dir_put` | Upload a directory recursively with glob pattern support |
+
+### Chunked Transfer Tools (Large Files)
+| Tool | Purpose |
+|------|---------|
+| `shell_file_get_chunked` | Download large files in chunks with resume support |
+| `shell_file_put_chunked` | Upload large files in chunks with resume support |
+| `shell_transfer_status` | Check progress of a chunked transfer |
+| `shell_transfer_resume` | Resume an interrupted chunked transfer |
+
+#### File Transfer Features
+- **Checksum verification**: SHA256 checksum calculation and verification
+- **Atomic writes**: Temp file + rename to prevent partial files
+- **Timestamp preservation**: Maintain file modification times
+- **Glob patterns**: Filter files with patterns like `**/*.go`, `*.log`
+- **Exclusion patterns**: Skip `.git`, `node_modules`, `__pycache__`, etc.
+- **Symlink handling**: Follow, preserve, or skip symbolic links
+- **Binary support**: Base64 encoding for binary files
+- **Chunked transfers**: Resume capability for large files with per-chunk checksums
+- **Progress tracking**: Transfer rate and duration metrics
 
 ## The Interrupt & Resume Pattern
 
@@ -326,6 +354,57 @@ prompt_detection:
    → Returns awaiting_input (version prompt)
 4. shell_provide_input("1.0.0")
    ... (continue for each prompt)
+```
+
+### Download Log File for Analysis
+```
+1. shell_session_create(host="prod-server")
+2. shell_file_get(session_id="s1", remote_path="/var/log/app.log")
+   → Returns file content, size, checksum
+3. shell_session_close()
+```
+
+### Upload Config File
+```
+1. shell_session_create(host="prod-server")
+2. shell_file_put(
+     session_id="s1",
+     remote_path="/etc/app/config.yaml",
+     content="key: value\n...",
+     create_dirs=true,
+     atomic=true
+   )
+   → Returns status, checksum, atomic_write: true
+3. shell_session_close()
+```
+
+### Sync Source Code Directory
+```
+1. shell_session_create(host="dev-server")
+2. shell_dir_put(
+     session_id="s1",
+     local_path="./src",
+     remote_path="/app/src",
+     pattern="**/*.go",       # Only .go files
+     preserve=true,           # Keep timestamps
+     overwrite=true           # Replace existing
+   )
+   → Returns files_transferred, total_bytes, errors
+3. shell_session_close()
+```
+
+### Backup Remote Directory
+```
+1. shell_session_create(host="prod-server")
+2. shell_dir_get(
+     session_id="s1",
+     remote_path="/app/data",
+     local_path="./backup/data",
+     preserve=true,
+     symlinks="skip"          # Don't follow symlinks
+   )
+   → Returns files_transferred, dirs_created, total_bytes
+3. shell_session_close()
 ```
 
 ## Error Handling

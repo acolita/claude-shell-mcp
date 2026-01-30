@@ -1,118 +1,115 @@
-// Test sudo password caching
 package main
 
 import (
-	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
-	"github.com/acolita/claude-shell-mcp/internal/config"
-	"github.com/acolita/claude-shell-mcp/internal/security"
-	"github.com/acolita/claude-shell-mcp/internal/session"
+	"golang.org/x/crypto/ssh"
 )
 
 func main() {
-	host := getEnvOrArg("SSH_HOST", 1, "192.168.15.200")
-	user := getEnvOrArg("SSH_USER", 2, "ralmeida")
-	password := getEnvOrArg("SSH_PASSWORD", 3, "")
-	sudoPassword := getEnvOrArg("SUDO_PASSWORD", 4, password) // Default to same as SSH password
+	// Connect to SSH
+	config := &ssh.ClientConfig{
+		User: "ralmeida",
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeysCallback(func() ([]ssh.Signer, error) {
+				key, err := os.ReadFile(os.ExpandEnv("$HOME/.ssh/acolita_pair.pem"))
+				if err != nil {
+					return nil, err
+				}
+				signer, err := ssh.ParsePrivateKey(key)
+				if err != nil {
+					return nil, err
+				}
+				return []ssh.Signer{signer}, nil
+			}),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}
 
-	fmt.Printf("Connecting to %s@%s...\n", user, host)
-
-	cfg := config.DefaultConfig()
-	mgr := session.NewManager(cfg)
-	sudoCache := security.NewSudoCache(5 * time.Minute)
-
-	sess, err := mgr.Create(session.CreateOptions{
-		Mode:     "ssh",
-		Host:     host,
-		Port:     22,
-		User:     user,
-		Password: password,
-	})
+	client, err := ssh.Dial("tcp", "192.168.15.200:22", config)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating session: %v\n", err)
+		fmt.Printf("Failed to connect: %v\n", err)
 		os.Exit(1)
 	}
-	defer mgr.Close(sess.ID)
+	defer client.Close()
+	fmt.Println("Connected!")
 
-	fmt.Printf("Session created: %s\n\n", sess.ID)
-
-	// Test 1: Run sudo command - should prompt for password
-	fmt.Println("=== Test 1: sudo whoami (should prompt for password) ===")
-	result, err := sess.Exec("sudo whoami", 10000)
+	// Create session
+	session, err := client.NewSession()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Printf("Failed to create session: %v\n", err)
 		os.Exit(1)
 	}
-	printResult(result)
+	defer session.Close()
 
-	// If we got a password prompt, provide the password
-	if result.Status == "awaiting_input" && result.PromptType == "password" {
-		fmt.Println("\n=== Detected password prompt, providing password and caching ===")
-
-		// Cache the password
-		sudoCache.Set(sess.ID, []byte(sudoPassword))
-
-		// Provide the password
-		result, err = sess.ProvideInput(sudoPassword)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		printResult(result)
+	// Request PTY
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: 14400,
+		ssh.TTY_OP_OSPEED: 14400,
 	}
+	if err := session.RequestPty("dumb", 24, 120, modes); err != nil {
+		fmt.Printf("Failed to request PTY: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("PTY allocated!")
 
-	// Test 2: Run another sudo command - should use cached password (on server side)
-	fmt.Println("\n=== Test 2: sudo id (should use sudo's cached credentials) ===")
-	result, err = sess.Exec("sudo id", 10000)
+	// Get stdin/stdout
+	stdin, err := session.StdinPipe()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Printf("Failed to get stdin: %v\n", err)
 		os.Exit(1)
 	}
 
-	// If prompted again, use our cache
-	if result.Status == "awaiting_input" && result.PromptType == "password" {
-		fmt.Println("Prompted for password again, using cached password...")
-		if cachedPwd := sudoCache.Get(sess.ID); cachedPwd != nil {
-			result, err = sess.ProvideInput(string(cachedPwd))
+	stdout, err := session.StdoutPipe()
+	if err != nil {
+		fmt.Printf("Failed to get stdout: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Start shell
+	if err := session.Shell(); err != nil {
+		fmt.Printf("Failed to start shell: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("Shell started!")
+
+	// Read initial output
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := stdout.Read(buf)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
+				if err != io.EOF {
+					fmt.Printf("\n[Read error: %v]\n", err)
+				}
+				return
 			}
+			fmt.Printf("[OUT %d bytes]: %q\n", n, string(buf[:n]))
 		}
-	}
-	printResult(result)
+	}()
 
-	// Test 3: Run non-sudo command
-	fmt.Println("\n=== Test 3: Regular command (whoami) ===")
-	result, err = sess.Exec("whoami", 5000)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	printResult(result)
+	time.Sleep(500 * time.Millisecond)
 
-	// Show cache status
-	fmt.Println("\n=== Sudo cache status ===")
-	fmt.Printf("  Cached: %v\n", sudoCache.IsValid(sess.ID))
-	fmt.Printf("  Expires in: %v\n", sudoCache.ExpiresIn(sess.ID))
+	// Run sudo
+	fmt.Println("\n--- Sending: sudo ls /root ---")
+	stdin.Write([]byte("sudo ls /root\n"))
 
-	fmt.Println("\nSudo test complete!")
-}
+	time.Sleep(1 * time.Second)
 
-func printResult(r *session.ExecResult) {
-	data, _ := json.MarshalIndent(r, "", "  ")
-	fmt.Println(string(data))
-}
+	// Wait for password prompt, then send password
+	fmt.Println("\n--- Waiting 100ms then sending password ---")
+	time.Sleep(100 * time.Millisecond)
 
-func getEnvOrArg(envKey string, argIdx int, defaultVal string) string {
-	if val := os.Getenv(envKey); val != "" {
-		return val
-	}
-	if len(os.Args) > argIdx {
-		return os.Args[argIdx]
-	}
-	return defaultVal
+	password := "nolpvesc30"
+	fmt.Printf("--- Sending password (%d chars) + newline ---\n", len(password))
+	n, err := stdin.Write([]byte(password + "\n"))
+	fmt.Printf("--- Write returned: n=%d, err=%v ---\n", n, err)
+
+	time.Sleep(2 * time.Second)
+
+	fmt.Println("\n--- Done ---")
 }

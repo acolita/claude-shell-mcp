@@ -26,7 +26,7 @@ type Server struct {
 func NewServer(cfg *config.Config) *Server {
 	mcpServer := server.NewMCPServer(
 		"claude-shell-mcp",
-		"0.1.0-alpha",
+		"1.1.0",
 		server.WithToolCapabilities(false),
 		server.WithLogging(),
 	)
@@ -84,4 +84,49 @@ func NewServer(cfg *config.Config) *Server {
 func (s *Server) Run() error {
 	slog.Info("starting MCP server on stdio transport")
 	return server.ServeStdio(s.mcpServer)
+}
+
+// UpdateConfig applies a new configuration at runtime.
+// Only certain settings can be hot-reloaded; others require a restart.
+func (s *Server) UpdateConfig(cfg *config.Config) {
+	slog.Debug("applying config update")
+
+	// Update command filter
+	newFilter, err := security.NewCommandFilter(
+		cfg.Security.CommandBlocklist,
+		cfg.Security.CommandAllowlist,
+	)
+	if err != nil {
+		slog.Warn("failed to update command filter, keeping previous",
+			slog.String("error", err.Error()),
+		)
+	} else {
+		s.commandFilter = newFilter
+		slog.Debug("command filter updated")
+	}
+
+	// Update rate limiter settings
+	maxAuthFailures := cfg.Security.MaxAuthFailures
+	if maxAuthFailures <= 0 {
+		maxAuthFailures = security.DefaultMaxAuthFailures
+	}
+	authLockoutDuration := cfg.Security.AuthLockoutDuration
+	if authLockoutDuration <= 0 {
+		authLockoutDuration = security.DefaultAuthLockoutDuration
+	}
+	s.authRateLimiter = security.NewAuthRateLimiter(maxAuthFailures, authLockoutDuration)
+	slog.Debug("auth rate limiter updated")
+
+	// Update recording settings
+	recordingPath := cfg.Recording.Path
+	if recordingPath == "" {
+		recordingPath = "/tmp/claude-shell-mcp/recordings"
+	}
+	s.recordingManager = recording.NewManager(recordingPath, cfg.Recording.Enabled)
+	slog.Debug("recording manager updated")
+
+	// Update config reference
+	s.config = cfg
+
+	slog.Info("configuration hot-reloaded successfully")
 }

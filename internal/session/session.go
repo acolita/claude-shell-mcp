@@ -16,6 +16,7 @@ import (
 	"github.com/acolita/claude-shell-mcp/internal/config"
 	"github.com/acolita/claude-shell-mcp/internal/prompt"
 	localpty "github.com/acolita/claude-shell-mcp/internal/pty"
+	"github.com/acolita/claude-shell-mcp/internal/sftp"
 	"github.com/acolita/claude-shell-mcp/internal/ssh"
 )
 
@@ -1130,4 +1131,47 @@ type ExecResult struct {
 	Hint                 string            `json:"hint,omitempty"`
 	SudoAuthenticated    bool              `json:"sudo_authenticated,omitempty"`
 	SudoExpiresInSeconds int               `json:"sudo_expires_in_seconds,omitempty"`
+}
+
+// SFTPClient returns an SFTP client for file transfer operations.
+// For SSH sessions, this returns an SFTP client that uses the existing SSH connection.
+// For local sessions, this returns an error (use direct file operations instead).
+func (s *Session) SFTPClient() (*sftp.Client, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.Mode != "ssh" {
+		return nil, fmt.Errorf("SFTP not available for local sessions (use direct file operations)")
+	}
+
+	if s.sshClient == nil {
+		return nil, fmt.Errorf("SSH client not initialized")
+	}
+
+	return s.sshClient.SFTPClient()
+}
+
+// IsSSH returns true if this is an SSH session.
+func (s *Session) IsSSH() bool {
+	return s.Mode == "ssh"
+}
+
+// ResolvePath resolves a relative path using the session's current working directory.
+func (s *Session) ResolvePath(path string) string {
+	if path == "" {
+		return s.Cwd
+	}
+	// If path is absolute, return as-is
+	if len(path) > 0 && path[0] == '/' {
+		return path
+	}
+	// If path starts with ~, it's relative to home (leave as-is for remote handling)
+	if len(path) > 0 && path[0] == '~' {
+		return path
+	}
+	// Relative path - prepend cwd
+	if s.Cwd == "" || s.Cwd == "~" {
+		return path
+	}
+	return s.Cwd + "/" + path
 }

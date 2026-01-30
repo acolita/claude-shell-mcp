@@ -42,10 +42,11 @@ type SecurityConfig struct {
 	SudoCacheTTL        time.Duration `yaml:"sudo_cache_ttl"`
 	IdleTimeout         time.Duration `yaml:"idle_timeout"`
 	MaxSessionsPerUser  int           `yaml:"max_sessions_per_user"`
-	CommandBlocklist    []string      `yaml:"command_blocklist"`    // Regex patterns for blocked commands
-	CommandAllowlist    []string      `yaml:"command_allowlist"`    // If set, only these patterns allowed
-	MaxAuthFailures     int           `yaml:"max_auth_failures"`    // Max failed auth attempts before lockout
+	CommandBlocklist    []string      `yaml:"command_blocklist"`     // Regex patterns for blocked commands
+	CommandAllowlist    []string      `yaml:"command_allowlist"`     // If set, only these patterns allowed
+	MaxAuthFailures     int           `yaml:"max_auth_failures"`     // Max failed auth attempts before lockout
 	AuthLockoutDuration time.Duration `yaml:"auth_lockout_duration"` // Duration of auth lockout
+	UseKeyring          bool          `yaml:"use_keyring"`           // Use OS keyring for credential storage
 }
 
 // LoggingConfig defines logging settings.

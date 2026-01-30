@@ -22,6 +22,17 @@ type SSHPTY struct {
 	term string
 	rows uint32
 	cols uint32
+
+	// Buffered reader for timeout support
+	dataCh   chan []byte   // Channel for incoming data chunks
+	errCh    chan error    // Channel for read errors
+	closeCh  chan struct{} // Channel to signal close
+	closed   bool
+	closeMu  sync.Mutex
+
+	// Read deadline support
+	readDeadline time.Time
+	deadlineMu   sync.Mutex
 }
 
 // SSHPTYOptions configures SSH PTY allocation.
@@ -118,15 +129,85 @@ func NewSSHPTY(client *Client, opts SSHPTYOptions) (*SSHPTY, error) {
 		term:    opts.Term,
 		rows:    opts.Rows,
 		cols:    opts.Cols,
+		dataCh:  make(chan []byte, 100), // Buffer up to 100 chunks
+		errCh:   make(chan error, 1),
+		closeCh: make(chan struct{}),
 	}
+
+	// Start background reader
+	go pty.backgroundReader()
 
 	return pty, nil
 }
 
-// Read reads from the PTY output.
-func (p *SSHPTY) Read(b []byte) (int, error) {
-	return p.stdout.Read(b)
+// backgroundReader continuously reads from stdout and sends data to the channel.
+func (p *SSHPTY) backgroundReader() {
+	buf := make([]byte, 4096)
+	for {
+		select {
+		case <-p.closeCh:
+			return
+		default:
+		}
+
+		n, err := p.stdout.Read(buf)
+		if err != nil {
+			select {
+			case p.errCh <- err:
+			default:
+				// Error channel full, discard
+			}
+			return
+		}
+
+		if n > 0 {
+			// Make a copy of the data since buf will be reused
+			data := make([]byte, n)
+			copy(data, buf[:n])
+
+			select {
+			case p.dataCh <- data:
+			case <-p.closeCh:
+				return
+			}
+		}
+	}
 }
+
+// Read reads from the PTY output with deadline support.
+func (p *SSHPTY) Read(b []byte) (int, error) {
+	p.deadlineMu.Lock()
+	deadline := p.readDeadline
+	p.deadlineMu.Unlock()
+
+	// Calculate timeout
+	var timeout <-chan time.Time
+	if !deadline.IsZero() {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return 0, &timeoutError{}
+		}
+		timeout = time.After(remaining)
+	}
+
+	// Wait for data, error, or timeout
+	select {
+	case data := <-p.dataCh:
+		n := copy(b, data)
+		return n, nil
+	case err := <-p.errCh:
+		return 0, err
+	case <-timeout:
+		return 0, &timeoutError{}
+	}
+}
+
+// timeoutError implements net.Error for timeout detection.
+type timeoutError struct{}
+
+func (e *timeoutError) Error() string   { return "i/o timeout" }
+func (e *timeoutError) Timeout() bool   { return true }
+func (e *timeoutError) Temporary() bool { return true }
 
 // Write writes to the PTY input.
 func (p *SSHPTY) Write(b []byte) (int, error) {
@@ -166,6 +247,17 @@ func (p *SSHPTY) Interrupt() error {
 
 // Close closes the SSH PTY session.
 func (p *SSHPTY) Close() error {
+	p.closeMu.Lock()
+	defer p.closeMu.Unlock()
+
+	if p.closed {
+		return nil
+	}
+	p.closed = true
+
+	// Signal background reader to stop
+	close(p.closeCh)
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -183,11 +275,10 @@ func (p *SSHPTY) Wait() error {
 }
 
 // SetReadDeadline sets a read deadline.
-// Note: SSH sessions don't support deadlines directly, so this is a no-op.
-// The caller should use context with timeout instead.
 func (p *SSHPTY) SetReadDeadline(t time.Time) error {
-	// SSH sessions don't support deadlines
-	// This is handled at a higher level with goroutines and channels
+	p.deadlineMu.Lock()
+	defer p.deadlineMu.Unlock()
+	p.readDeadline = t
 	return nil
 }
 

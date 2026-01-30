@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 )
@@ -212,6 +213,11 @@ func (p *LocalPTY) Close() error {
 // Fd returns the file descriptor of the PTY.
 func (p *LocalPTY) Fd() uintptr {
 	return p.pty.Fd()
+}
+
+// SetReadDeadline sets a deadline for read operations.
+func (p *LocalPTY) SetReadDeadline(t time.Time) error {
+	return p.pty.SetReadDeadline(t)
 }
 
 // File returns the underlying file of the PTY.

@@ -1,5 +1,9 @@
 # claude-shell-mcp
 
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/acolita/claude-shell-mcp/releases)
+[![Go Version](https://img.shields.io/badge/go-1.22+-00ADD8.svg)](https://go.dev/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 MCP server providing persistent, interactive shell sessions over SSH for LLM agents.
 
 ## Features
@@ -12,7 +16,23 @@ MCP server providing persistent, interactive shell sessions over SSH for LLM age
 
 ## Installation
 
-### Build from source
+### Download Binary
+
+Download the latest release from [GitHub Releases](https://github.com/acolita/claude-shell-mcp/releases):
+
+```bash
+# Linux (amd64)
+curl -Lo claude-shell-mcp https://github.com/acolita/claude-shell-mcp/releases/latest/download/claude-shell-mcp-linux-amd64
+chmod +x claude-shell-mcp
+sudo mv claude-shell-mcp /usr/local/bin/
+
+# macOS (Apple Silicon)
+curl -Lo claude-shell-mcp https://github.com/acolita/claude-shell-mcp/releases/latest/download/claude-shell-mcp-darwin-arm64
+chmod +x claude-shell-mcp
+sudo mv claude-shell-mcp /usr/local/bin/
+```
+
+### Build from Source
 
 ```bash
 git clone https://github.com/acolita/claude-shell-mcp.git
@@ -21,7 +41,14 @@ make build
 sudo cp claude-shell-mcp /usr/local/bin/
 ```
 
-### Verify installation
+### Docker
+
+```bash
+docker pull ghcr.io/acolita/claude-shell-mcp:latest
+docker run -v ~/.ssh:/root/.ssh:ro ghcr.io/acolita/claude-shell-mcp --mode ssh
+```
+
+### Verify Installation
 
 ```bash
 claude-shell-mcp --version

@@ -116,6 +116,45 @@ func DefaultPatterns() []Pattern {
 			MaskInput: true,
 		},
 
+		// Git interactive rebase
+		{
+			Name:              "git_rebase_pick",
+			Regex:             regexp.MustCompile(`(?m)^pick [0-9a-f]+ `),
+			Type:              PromptTypeEditor,
+			SuggestedResponse: ":wq (to proceed) or :q! (to abort)",
+		},
+		{
+			Name:              "git_rebase_commands",
+			Regex:             regexp.MustCompile(`(?i)# Commands:\s*$`),
+			Type:              PromptTypeEditor,
+			SuggestedResponse: ":wq (to proceed) or :q! (to abort)",
+		},
+		{
+			Name:              "git_commit_message",
+			Regex:             regexp.MustCompile(`(?m)^# Please enter the commit message`),
+			Type:              PromptTypeEditor,
+			SuggestedResponse: ":wq (to save) or :q! (to abort)",
+		},
+
+		// Git merge conflicts
+		{
+			Name:  "git_merge_conflict",
+			Regex: regexp.MustCompile(`(?m)^<<<<<<<\s+`),
+			Type:  PromptTypeText,
+		},
+		{
+			Name:              "git_merge_tool",
+			Regex:             regexp.MustCompile(`(?i)was the merge successful\?\s*\[y/n\]`),
+			Type:              PromptTypeConfirmation,
+			SuggestedResponse: "y",
+		},
+		{
+			Name:              "git_continue_rebase",
+			Regex:             regexp.MustCompile(`(?i)all conflicts fixed.*run "git rebase --continue"`),
+			Type:              PromptTypeText,
+			SuggestedResponse: "git rebase --continue",
+		},
+
 		// Generic yes/no
 		{
 			Name:              "yes_no_generic",
@@ -183,6 +222,22 @@ func DefaultPatterns() []Pattern {
 			Type:              PromptTypeConfirmation,
 			SuggestedResponse: "y",
 		},
+		{
+			Name:              "docker_build_confirm",
+			Regex:             regexp.MustCompile(`(?i)do you want to continue.*\[y/N\]`),
+			Type:              PromptTypeConfirmation,
+			SuggestedResponse: "y",
+		},
+		{
+			Name:  "docker_container_shell",
+			Regex: regexp.MustCompile(`(?m)^(root|[\w-]+)@[a-f0-9]{12}[:#]\s*$`),
+			Type:  PromptTypeText,
+		},
+		{
+			Name:  "docker_compose_interactive",
+			Regex: regexp.MustCompile(`(?i)attaching to\s+[\w-]+`),
+			Type:  PromptTypeText,
+		},
 
 		// Database CLI prompts
 		{
@@ -200,13 +255,11 @@ func DefaultPatterns() []Pattern {
 			Regex: regexp.MustCompile(`\d+\.\d+\.\d+\.\d+:\d+>\s*$`), // redis-cli prompt
 			Type:  PromptTypeText,
 		},
-		{
-			Name:  "mongo_prompt",
-			Regex: regexp.MustCompile(`>\s*$`), // MongoDB prompt (simplified)
-			Type:  PromptTypeText,
-		},
+		// Note: MongoDB and Node REPL prompts are just "> " which conflicts with
+		// bash's PS2 continuation prompt. We omit these to avoid false positives.
+		// Detection relies on stall-based interactive detection instead.
 
-		// Python/Ruby/Node REPL prompts
+		// Python/Ruby REPL prompts (distinctive enough to avoid false positives)
 		{
 			Name:  "python_prompt",
 			Regex: regexp.MustCompile(`>>>\s*$`),
@@ -223,8 +276,8 @@ func DefaultPatterns() []Pattern {
 			Type:  PromptTypeText,
 		},
 		{
-			Name:  "node_repl_prompt",
-			Regex: regexp.MustCompile(`>\s*$`), // Node REPL (simplified)
+			Name:  "node_welcome",
+			Regex: regexp.MustCompile(`Welcome to Node\.js`), // Detect node REPL by welcome message
 			Type:  PromptTypeText,
 		},
 

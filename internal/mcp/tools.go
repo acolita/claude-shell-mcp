@@ -18,13 +18,24 @@ func (s *Server) registerTools() {
 	s.mcpServer.AddTool(shellInterruptTool(), s.handleShellInterrupt)
 	s.mcpServer.AddTool(shellSessionStatusTool(), s.handleShellSessionStatus)
 	s.mcpServer.AddTool(shellSessionCloseTool(), s.handleShellSessionClose)
+
+	// Register file transfer tools
+	s.registerFileTransferTools()
+	s.registerRecursiveTransferTools()
+	s.registerChunkedTransferTools()
 }
 
 // Tool definitions
 
 func shellSessionCreateTool() mcp.Tool {
 	return mcp.NewTool("shell_session_create",
-		mcp.WithDescription("Initialize a persistent shell session (local PTY or SSH)"),
+		mcp.WithDescription(`Initialize a persistent shell session (local PTY or SSH).
+
+The session maintains state (working directory, environment variables, shell history) across multiple shell_exec calls. Use 'local' mode for commands on the local machine, or 'ssh' mode for remote servers.
+
+For SSH mode, authentication uses SSH keys (agent or key_path). The session auto-reconnects if the connection drops.
+
+Returns a session_id to use with other shell_* tools.`),
 		mcp.WithString("mode",
 			mcp.Description("Session mode: 'local' for local PTY or 'ssh' for remote SSH"),
 			mcp.DefaultString("local"),
@@ -38,12 +49,31 @@ func shellSessionCreateTool() mcp.Tool {
 		mcp.WithString("user",
 			mcp.Description("SSH username (required for ssh mode)"),
 		),
+		mcp.WithString("key_path",
+			mcp.Description("Path to SSH private key file (e.g., ~/.ssh/id_ed25519)"),
+		),
 	)
 }
 
 func shellExecTool() mcp.Tool {
 	return mcp.NewTool("shell_exec",
-		mcp.WithDescription("Execute a command in a shell session with interactive prompt detection"),
+		mcp.WithDescription(`Execute a command in a shell session with interactive prompt detection.
+
+Returns one of three statuses:
+- "completed": Command finished. Check exit_code and stdout.
+- "awaiting_input": Command is waiting for input (password, confirmation, or interactive app like vim). Use shell_provide_input to send input, or shell_interrupt to cancel.
+- "timeout": Command exceeded timeout_ms. The command was interrupted and the session is ready for new commands.
+
+Interactive prompts are auto-detected:
+- Password prompts (sudo, ssh) - prompt_type: "password", mask_input: true
+- Confirmations ([Y/n]) - prompt_type: "confirmation"
+- Interactive apps (vim, less) - prompt_type: "interactive"
+
+The session preserves state (cwd, env vars) across commands.
+
+LIMITATION: Commands with embedded literal newlines (heredocs, multi-line strings) may incorrectly trigger "awaiting_input" due to shell continuation prompts. Use escaped newlines instead:
+- Use printf "line1\nline2\n" instead of literal newlines
+- Use echo -e "line1\nline2" for multi-line output`),
 		mcp.WithString("session_id",
 			mcp.Required(),
 			mcp.Description("The session ID returned by shell_session_create"),
@@ -60,7 +90,13 @@ func shellExecTool() mcp.Tool {
 
 func shellProvideInputTool() mcp.Tool {
 	return mcp.NewTool("shell_provide_input",
-		mcp.WithDescription("Resume a paused session by providing input (password, confirmation, etc.)"),
+		mcp.WithDescription(`Resume a paused session by providing input (password, confirmation, etc.).
+
+Use this after shell_exec returns status "awaiting_input". A newline is automatically appended to the input.
+
+For sudo passwords, set cache_for_sudo=true to cache the password for subsequent sudo commands in this session (cached for 5 minutes).
+
+Returns the same status types as shell_exec - the command may complete, request more input, or timeout.`),
 		mcp.WithString("session_id",
 			mcp.Required(),
 			mcp.Description("The session ID"),
@@ -77,7 +113,11 @@ func shellProvideInputTool() mcp.Tool {
 
 func shellInterruptTool() mcp.Tool {
 	return mcp.NewTool("shell_interrupt",
-		mcp.WithDescription("Send SIGINT (Ctrl+C) to interrupt a running command"),
+		mcp.WithDescription(`Send SIGINT (Ctrl+C) to interrupt a running command.
+
+Use this to cancel long-running commands or exit interactive prompts. Note: Some programs like vim ignore SIGINT - for those, use shell_provide_input with the appropriate exit command (e.g., ":q!" for vim).
+
+After interrupt, the session returns to idle state and is ready for new commands.`),
 		mcp.WithString("session_id",
 			mcp.Required(),
 			mcp.Description("The session ID"),
@@ -87,7 +127,11 @@ func shellInterruptTool() mcp.Tool {
 
 func shellSessionStatusTool() mcp.Tool {
 	return mcp.NewTool("shell_session_status",
-		mcp.WithDescription("Check session health, current directory, and environment"),
+		mcp.WithDescription(`Check session health, current directory, and environment.
+
+Returns session state (idle, running, awaiting_input), current working directory, environment variables, shell aliases, connection status, and sudo cache status.
+
+Useful for debugging or verifying session state before executing commands.`),
 		mcp.WithString("session_id",
 			mcp.Required(),
 			mcp.Description("The session ID"),
@@ -97,7 +141,11 @@ func shellSessionStatusTool() mcp.Tool {
 
 func shellSessionCloseTool() mcp.Tool {
 	return mcp.NewTool("shell_session_close",
-		mcp.WithDescription("Close and cleanup a shell session"),
+		mcp.WithDescription(`Close and cleanup a shell session.
+
+Terminates the shell process and releases resources. For SSH sessions, closes the connection. Always close sessions when done to free resources.
+
+If session recording was enabled, returns the path to the recording file.`),
 		mcp.WithString("session_id",
 			mcp.Required(),
 			mcp.Description("The session ID"),
@@ -116,6 +164,7 @@ func (s *Server) handleShellSessionCreate(ctx context.Context, req mcp.CallToolR
 	host := mcp.ParseString(req, "host", "")
 	port := mcp.ParseInt(req, "port", 22)
 	user := mcp.ParseString(req, "user", "")
+	keyPath := mcp.ParseString(req, "key_path", "")
 
 	// Validate SSH parameters
 	if mode == "ssh" {
@@ -145,10 +194,11 @@ func (s *Server) handleShellSessionCreate(ctx context.Context, req mcp.CallToolR
 	)
 
 	sess, err := s.sessionManager.Create(session.CreateOptions{
-		Mode: mode,
-		Host: host,
-		Port: port,
-		User: user,
+		Mode:    mode,
+		Host:    host,
+		Port:    port,
+		User:    user,
+		KeyPath: keyPath,
 	})
 	if err != nil {
 		// Record auth failure for SSH

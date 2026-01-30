@@ -88,7 +88,7 @@ exec("sudo whoami") → awaiting_input → provide_input("pass") → completed (
 - [x] Automatic cryptographic wipe after TTL
 - [x] Sudo credential caching (5-min default)
 - [x] Passphrase-protected SSH key support
-- [ ] Integration with OS keyring (optional)
+- [x] Integration with OS keyring (optional)
 
 **Deliverable:** Sudo password cached securely, auto-injected for subsequent commands ✅
 
@@ -135,17 +135,17 @@ Turn 2: echo $DB_HOST  # Returns localhost via state restoration
 
 ### Week 11: Complex Interactives
 - [x] Support for `npm init`, `vue create` wizards
-- [ ] Git interactive rebase handling
-- [ ] Docker-compose TTY allocation
+- [x] Git interactive rebase handling
+- [x] Docker-compose TTY allocation
 - [x] Vim/nano detection (block or hand off)
-- [ ] Expect-like scripting for known workflows
+- [x] Expect-like scripting for known workflows
 
 **Deliverable:** Successfully runs `npm init` answering all prompts via LLM
 
 ### Week 12: Developer Experience
-- [ ] Configuration file hot-reload
+- [x] Configuration file hot-reload
 - [x] Verbose debug mode (hex PTY dumps)
-- [ ] Local testing mode (mock SSH server)
+- [x] Local testing mode (mock SSH server)
 - [x] Claude Desktop integration guide
 - [x] Docker image for easy deployment
 
@@ -158,14 +158,14 @@ Turn 2: echo $DB_HOST  # Returns localhost via state restoration
 
 ### Week 13: Claude Code Integration
 - [x] Test with Claude Code (not just Claude Desktop)
-- [ ] Work around Claude Code bash limitations
-- [ ] Optimize for Claude Code's specific tool calling patterns
+- [x] Work around Claude Code bash limitations
+- [x] Optimize for Claude Code's specific tool calling patterns
 - [x] Example workflows (deployment, debugging, log analysis)
 
 **Deliverable:** End-to-end demo: "Deploy my app" across 3 servers with git pull, npm install, pm2 restart
 
 ### Week 14: Performance & Scale
-- [ ] Connection pooling optimization
+- [x] Connection pooling optimization
 - [x] Memory usage profiling (leak detection)
 - [x] Concurrent session stress testing (100+ sessions)
 - [x] Binary size optimization (strip with -s -w)
@@ -184,10 +184,197 @@ Turn 2: echo $DB_HOST  # Returns localhost via state restoration
 - [ ] Support for AWS SSM, GCP IAP (beyond SSH)
 
 ### Phase 8: Intelligence (Month 5)
-- [ ] LLM-based prompt classification (not just regex)
-- [ ] Automatic error recovery (suggest fixes for common failures)
-- [ ] Smart sudo detection (parse sudoers, predict password needs)
+- [x] LLM-based prompt classification (not just regex)
+- [x] Automatic error recovery (suggest fixes for common failures)
+- [x] Smart sudo detection (parse sudoers, predict password needs)
 - [ ] Integration with 1Password/Bitwarden CLI for secrets
+
+### Phase 9: Control Plane Architecture (Month 6)
+**Goal:** Reliable process tracking via dedicated control session per host
+
+#### 9.1: Control Plane Foundation
+- [x] `ControlSession` type - lightweight session without prompt detection
+- [x] One control session per host (shared across all sessions to that host)
+- [x] Lazy initialization (created on first session to host)
+- [x] PTY device path capture for each session (`/dev/pts/X`)
+
+#### 9.2: Process Tracking
+- [ ] Capture foreground PID on command execution
+- [ ] `ps -t pts/X` to list processes on a PTY
+- [ ] `pstree -p <shell_pid>` for process hierarchy
+- [ ] Process state detection via `/proc/<pid>/stat`
+
+#### 9.3: Reliable Termination
+- [x] `pkill -t pts/X` to kill all processes on PTY
+- [x] `kill -9 <pid>` for targeted termination
+- [x] Graceful escalation: SIGINT → SIGTERM → SIGKILL (fallback)
+- [ ] Verification that process actually died
+
+#### 9.4: Input Detection via Control Plane
+- [ ] Check process state: `S` (sleeping) on PTY read = waiting for input
+- [ ] `/proc/<pid>/wchan` inspection for blocked syscall
+- [ ] Combine with existing heuristics for better accuracy
+
+**Deliverable:** Timeout reliably kills any process, including `top`, `vim`, `less`
+
+### Phase 10: Local eBPF Integration (Month 7)
+**Goal:** Perfect process tracking for local sessions via kernel instrumentation
+
+#### 10.1: eBPF Foundation
+- [ ] eBPF program loader using `cilium/ebpf`
+- [ ] Capability detection (CAP_BPF or root)
+- [ ] Graceful fallback if eBPF unavailable
+- [ ] Ring buffer for kernel→userspace events
+
+#### 10.2: Process Lifecycle Tracking
+- [ ] `tracepoint/sched/sched_process_exit` - instant exit notification
+- [ ] `tracepoint/sched/sched_process_fork` - track child processes
+- [ ] `tracepoint/syscalls/sys_enter_execve` - know what binary runs
+- [ ] PID filtering to only watch our sessions
+
+#### 10.3: Input Detection via eBPF
+- [ ] `tracepoint/syscalls/sys_enter_read` on PTY fd
+- [ ] Detect when process blocks on terminal read
+- [ ] Extract "last output before read" as prompt hint
+- [ ] Sub-millisecond latency on state changes
+
+#### 10.4: Signal Tracking
+- [ ] `tracepoint/signal/signal_deliver` - confirm signals received
+- [ ] Know if SIGINT was caught vs killed process
+- [ ] Automatic escalation if signal ignored
+
+**Deliverable:** Local sessions have perfect "awaiting_input" detection, instant completion notification
+
+### Phase 11: Remote eBPF Agent (Month 8-9)
+**Goal:** eBPF-powered monitoring for remote SSH sessions
+
+#### 11.1: Agent Binary
+- [ ] `claude-shell-agent` - single static binary (~5MB)
+- [ ] Embeds eBPF programs (CO-RE for portability)
+- [ ] Runs with CAP_BPF or as root
+- [ ] Minimal dependencies (just kernel 5.x+)
+
+#### 11.2: Agent Protocol
+- [ ] Protobuf-based event streaming
+- [ ] Events: ProcessExit, ProcessSpawn, WaitingForInput, SignalDelivered
+- [ ] Commands: Watch, Unwatch, Kill, InjectInput
+- [ ] Bidirectional communication over SSH channel
+
+#### 11.3: Agent Discovery & Launch
+- [ ] Check for agent: `ssh host "claude-shell-agent --version"`
+- [ ] Capability negotiation (what eBPF features available)
+- [ ] On-demand launch via SSH
+- [ ] Optional: auto-deploy if missing (with user consent)
+
+#### 11.4: Hybrid Session Manager
+- [ ] Per-host capability tracking
+- [ ] Automatic selection: Agent (eBPF) > Control Plane > Heuristics
+- [ ] Seamless fallback if agent crashes
+- [ ] Mixed-mode: some hosts with agent, some without
+
+**Architecture:**
+```
+SessionManager
+├── HostConnection (localhost)
+│   ├── Agent: eBPF direct (no SSH needed)
+│   ├── Sessions: [sess_a, sess_b]
+│   └── Fallback: Control Plane
+│
+├── HostConnection (prod-server)
+│   ├── Agent: claude-shell-agent v1.0 (eBPF over SSH)
+│   ├── Sessions: [sess_c]
+│   └── Fallback: Control Plane
+│
+└── HostConnection (legacy-server)
+    ├── Agent: not available (kernel 4.x)
+    ├── Sessions: [sess_d]
+    └── Fallback: Control Plane (active)
+```
+
+**Deliverable:** Remote sessions get eBPF-level accuracy when agent is deployed
+
+### Phase 12: Agent Deployment & Management (Month 10)
+**Goal:** Easy agent rollout across infrastructure
+
+#### 12.1: Installation Methods
+- [ ] Package repositories (apt, dnf, apk)
+- [ ] Single binary download (curl | sh)
+- [ ] Docker sidecar mode
+- [ ] Ansible/Terraform modules
+
+#### 12.2: Auto-Deployment
+- [ ] MCP server offers to install agent on first connect
+- [ ] `scp` binary to remote host
+- [ ] Verify checksum before execution
+- [ ] Cleanup on session end (optional)
+
+#### 12.3: Agent Updates
+- [ ] Version compatibility matrix
+- [ ] Automatic update detection
+- [ ] Rolling update without session interruption
+- [ ] Rollback on failure
+
+#### 12.4: Security Considerations
+- [ ] Agent runs with minimal privileges (CAP_BPF only)
+- [ ] Mutual authentication (agent ↔ MCP server)
+- [ ] Audit log of all agent actions
+- [ ] Rate limiting on event stream
+
+**Deliverable:** One-command agent deployment, automatic updates
+
+### Phase 13: File Transfer - SCP (Month 11)
+**Goal:** Seamless file GET/PUT over SSH sessions - a killer feature for LLM agents
+
+#### 13.1: Core Transfer Tools
+- [ ] `shell_file_get` tool - download file from remote session
+  - Return file content directly (small files, <1MB)
+  - Save to local path (large files)
+  - Support binary and text modes
+- [ ] `shell_file_put` tool - upload file to remote session
+  - Accept content directly (small files)
+  - Read from local path (large files)
+  - Set permissions on upload (chmod)
+
+#### 13.2: Directory Operations
+- [ ] Recursive directory download (`-r` flag)
+- [ ] Recursive directory upload
+- [ ] Glob pattern support (`*.log`, `src/**/*.go`)
+- [ ] Exclusion patterns (`.git`, `node_modules`)
+
+#### 13.3: Large File Handling
+- [ ] Streaming transfer for files >1MB
+- [ ] Progress reporting (bytes transferred, percentage)
+- [ ] Chunked transfer with resume capability
+- [ ] Checksum verification (SHA256)
+
+#### 13.4: Session Integration
+- [ ] Use existing SSH session (no reconnect needed)
+- [ ] Respect session's working directory for relative paths
+- [ ] Transfer while command is running (separate channel)
+- [ ] Atomic writes (temp file + rename)
+
+#### 13.5: Advanced Features
+- [ ] Compression on-the-fly (gzip for text files)
+- [ ] Diff-based sync (only transfer changed portions)
+- [ ] Symlink handling (follow vs preserve)
+- [ ] Preserve timestamps and permissions
+
+**Use Cases:**
+```
+# Download log file for analysis
+shell_file_get(session_id="s1", remote_path="/var/log/app.log")
+
+# Upload config file
+shell_file_put(session_id="s1", remote_path="/etc/app/config.yaml", content="...")
+
+# Download entire directory
+shell_file_get(session_id="s1", remote_path="/app/src", local_path="./backup", recursive=true)
+
+# Upload deployment artifact
+shell_file_put(session_id="s1", remote_path="/app/release.tar.gz", local_path="./dist/release.tar.gz")
+```
+
+**Deliverable:** LLM can read, write, and sync files on remote servers without shell workarounds (cat, base64, scp)
 
 ---
 
@@ -202,6 +389,7 @@ Turn 2: echo $DB_HOST  # Returns localhost via state restoration
 | Environment | Week 10 | State persistence across calls |
 | Advanced | Week 12 | npm init wizard completion |
 | v1.0 Release | Week 14 | Production ready |
+| File Transfer (SCP) | Month 11 | GET/PUT files without shell workarounds |
 
 ---
 
@@ -251,5 +439,5 @@ Adjust roadmap based on friction points discovered.
 
 ---
 
-*Last updated: 2026-01-29*
-*Target v1.0 release: 14 weeks from start*
+*Last updated: 2026-01-30*
+*v1.0.0 Released: 2026-01-29*

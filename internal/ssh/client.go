@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acolita/claude-shell-mcp/internal/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -21,6 +22,9 @@ type Client struct {
 	// Keepalive settings
 	keepaliveInterval time.Duration
 	keepaliveStop     chan struct{}
+
+	// SFTP client (lazy initialized)
+	sftpClient *sftp.Client
 }
 
 // ClientOptions configures SSH client behavior.
@@ -148,7 +152,7 @@ func (c *Client) NewSession() (*ssh.Session, error) {
 	return session, nil
 }
 
-// Close closes the SSH connection.
+// Close closes the SSH connection and any associated clients.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -156,6 +160,12 @@ func (c *Client) Close() error {
 	if c.keepaliveStop != nil {
 		close(c.keepaliveStop)
 		c.keepaliveStop = nil
+	}
+
+	// Close SFTP client first
+	if c.sftpClient != nil {
+		c.sftpClient.Close()
+		c.sftpClient = nil
 	}
 
 	if c.conn != nil {
@@ -190,6 +200,36 @@ func (c *Client) RemoteAddr() net.Addr {
 	defer c.mu.Unlock()
 	if c.conn != nil {
 		return c.conn.RemoteAddr()
+	}
+	return nil
+}
+
+// SFTPClient returns an SFTP client for file transfers.
+// The SFTP client is lazily initialized and reuses the SSH connection.
+func (c *Client) SFTPClient() (*sftp.Client, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.conn == nil {
+		return nil, fmt.Errorf("not connected")
+	}
+
+	if c.sftpClient == nil {
+		c.sftpClient = sftp.NewClient(c.conn)
+	}
+
+	return c.sftpClient, nil
+}
+
+// CloseSFTP closes the SFTP client without closing the SSH connection.
+func (c *Client) CloseSFTP() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.sftpClient != nil {
+		err := c.sftpClient.Close()
+		c.sftpClient = nil
+		return err
 	}
 	return nil
 }
