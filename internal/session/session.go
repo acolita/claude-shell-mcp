@@ -6,7 +6,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +49,10 @@ type Session struct {
 	Port     int
 	User     string
 	Password string // For password-based auth (not persisted)
+	KeyPath  string // Path to SSH private key file
+
+	// PTY info for control plane
+	PTYName string // e.g., "3" for /dev/pts/3
 
 	// Internal fields
 	config         *config.Config
@@ -58,6 +64,9 @@ type Session struct {
 	// Pending prompt info when awaiting input
 	pendingPrompt *prompt.Detection
 	outputBuffer  bytes.Buffer
+
+	// Control session reference for process management
+	controlSession *ControlSession
 }
 
 // Initialize initializes the session with a PTY.
@@ -107,6 +116,14 @@ func (s *Session) initializeLocal() error {
 	s.CreatedAt = time.Now()
 	s.LastUsed = time.Now()
 
+	// Get PTY name for control plane (e.g., "3" from "/dev/pts/3")
+	if f := localPTY.File(); f != nil {
+		ptyPath := f.Name()
+		if strings.HasPrefix(ptyPath, "/dev/pts/") {
+			s.PTYName = strings.TrimPrefix(ptyPath, "/dev/pts/")
+		}
+	}
+
 	// Get initial cwd
 	cwd, err := os.Getwd()
 	if err == nil {
@@ -140,13 +157,15 @@ func (s *Session) shellPromptCommand() string {
 	switch shellName {
 	case "zsh":
 		// Zsh uses PROMPT; also disable hooks and special features
-		return "PROMPT='$ '; RPROMPT=''; unset precmd_functions; unset preexec_functions; setopt NO_PROMPT_SUBST\n"
+		// PS2/PROMPT2 is the continuation prompt for multi-line commands
+		return "PROMPT='$ '; PROMPT2='> '; RPROMPT=''; unset precmd_functions; unset preexec_functions; setopt NO_PROMPT_SUBST\n"
 	case "fish":
 		// Fish requires a function definition
 		return "function fish_prompt; echo -n '$ '; end; set -U fish_greeting ''\n"
 	default:
 		// Bash and other POSIX shells
-		return "PS1='$ '; PROMPT_COMMAND=''; set +H\n"
+		// PS2 is the continuation prompt for multi-line commands
+		return "PS1='$ '; PS2='> '; PROMPT_COMMAND=''; set +H\n"
 	}
 }
 
@@ -166,10 +185,12 @@ func (s *Session) initializeSSH() error {
 	authCfg := ssh.AuthConfig{
 		UseAgent: true, // Try SSH agent first
 		Password: s.Password,
+		KeyPath:  s.KeyPath, // Use key_path from session if provided
+		Host:     s.Host,    // For SSH config lookup
 	}
 
-	// Check for key path in config
-	if s.config != nil {
+	// Check for key path in config (only if not already set)
+	if authCfg.KeyPath == "" && s.config != nil {
 		for _, srv := range s.config.Servers {
 			if srv.Host == s.Host || srv.Name == s.Host {
 				if srv.KeyPath != "" {
@@ -241,12 +262,35 @@ func (s *Session) initializeSSH() error {
 	// Try to detect remote shell
 	s.detectRemoteShell()
 
+	// Detect PTY name for control plane
+	s.detectPTYName()
+
 	// Set simple prompt based on detected shell
 	s.pty.WriteString(s.shellPromptCommand())
 	time.Sleep(200 * time.Millisecond)
 	s.readWithTimeout(buf, 300*time.Millisecond)
 
 	return nil
+}
+
+// detectPTYName detects the PTY device name for SSH sessions.
+func (s *Session) detectPTYName() {
+	s.pty.WriteString("tty 2>/dev/null\n")
+	time.Sleep(100 * time.Millisecond)
+
+	buf := make([]byte, 1024)
+	n, _ := s.readWithTimeout(buf, 200*time.Millisecond)
+	if n > 0 {
+		output := string(buf[:n])
+		lines := strings.Split(output, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "/dev/pts/") {
+				s.PTYName = strings.TrimPrefix(line, "/dev/pts/")
+				return
+			}
+		}
+	}
 }
 
 // detectRemoteShell attempts to detect the remote shell from $SHELL.
@@ -269,10 +313,26 @@ func (s *Session) detectRemoteShell() {
 	}
 }
 
-// readWithTimeout reads from PTY with a timeout.
+// readWithTimeout reads from PTY with a timeout, draining all available data.
 func (s *Session) readWithTimeout(buf []byte, timeout time.Duration) (int, error) {
-	s.pty.SetReadDeadline(time.Now().Add(timeout))
-	return s.pty.Read(buf)
+	totalRead := 0
+	deadline := time.Now().Add(timeout)
+
+	for time.Now().Before(deadline) {
+		s.pty.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+		n, err := s.pty.Read(buf[totalRead:])
+		if n > 0 {
+			totalRead += n
+			if totalRead >= len(buf) {
+				break
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	return totalRead, nil
 }
 
 // reconnectSSH attempts to reconnect an SSH session with state restoration.
@@ -422,6 +482,18 @@ func (s *Session) Exec(command string, timeoutMs int) (*ExecResult, error) {
 		return nil, fmt.Errorf("write command: %w", err)
 	}
 
+	// For multi-line commands, give bash time to process all lines
+	// before we start reading output. Each embedded newline causes bash
+	// to show a continuation prompt (PS2) while processing.
+	if strings.Contains(command, "\n") {
+		lineCount := strings.Count(command, "\n")
+		delay := time.Duration(lineCount*50) * time.Millisecond
+		if delay > 500*time.Millisecond {
+			delay = 500 * time.Millisecond
+		}
+		time.Sleep(delay)
+	}
+
 	// Read output with timeout
 	timeout := time.Duration(timeoutMs) * time.Millisecond
 	if timeout == 0 {
@@ -437,10 +509,14 @@ func (s *Session) Exec(command string, timeoutMs int) (*ExecResult, error) {
 // readOutput reads output from PTY until completion or prompt detection.
 func (s *Session) readOutput(ctx context.Context, command string) (*ExecResult, error) {
 	buf := make([]byte, 4096)
+	stallCount := 0
+	const stallThreshold = 15 // 15 x 100ms = 1.5 seconds of no output
 
 	for {
 		select {
 		case <-ctx.Done():
+			// Aggressively kill the running command
+			s.forceKillCommand()
 			s.State = StateIdle
 			return &ExecResult{
 				Status: "timeout",
@@ -467,6 +543,53 @@ func (s *Session) readOutput(ctx context.Context, command string) (*ExecResult, 
 						Cwd:      s.Cwd,
 					}, nil
 				}
+
+				// Increment stall counter when no data received
+				stallCount++
+
+				// After stall threshold, check if there's meaningful output beyond command echo
+				// This detects interactive apps like vim that produce output then wait
+				if stallCount >= stallThreshold {
+					cleanedStdout := s.cleanOutput(output, command)
+					// Only trigger awaiting_input if there's actual output (not just command echo)
+					if len(strings.TrimSpace(cleanedStdout)) > 0 {
+						// Check if this looks like a shell continuation prompt (PS2)
+						// This happens with multi-line commands - don't treat as interactive
+						if isContinuationPrompt(output) && strings.Contains(command, "\n") {
+							// Multi-line command still processing, wait longer
+							stallCount = stallThreshold / 2 // Reset partially to give more time
+							continue
+						}
+
+						// Check for interactive prompt patterns with ANSI stripped
+						strippedOutput := stripANSI(output)
+						if detection := s.promptDetector.Detect(strippedOutput); detection != nil {
+							s.State = StateAwaitingInput
+							s.pendingPrompt = detection
+							return &ExecResult{
+								Status:        "awaiting_input",
+								Stdout:        cleanedStdout,
+								PromptType:    string(detection.Pattern.Type),
+								PromptText:    detection.MatchedText,
+								ContextBuffer: detection.ContextBuffer,
+								MaskInput:     detection.Pattern.MaskInput,
+								Hint:          detection.Hint(),
+							}, nil
+						}
+
+						// If output exists but no pattern matched, treat as stalled interactive
+						s.State = StateAwaitingInput
+						return &ExecResult{
+							Status:        "awaiting_input",
+							Stdout:        cleanedStdout,
+							PromptType:    "interactive",
+							PromptText:    "",
+							ContextBuffer: output,
+							Hint:          "Command appears to be waiting for input. Send input or interrupt with shell_interrupt.",
+						}, nil
+					}
+				}
+
 				continue
 			}
 			s.State = StateIdle
@@ -474,6 +597,8 @@ func (s *Session) readOutput(ctx context.Context, command string) (*ExecResult, 
 		}
 
 		if n > 0 {
+			// Reset stall counter when we receive data
+			stallCount = 0
 			s.outputBuffer.Write(buf[:n])
 			output := s.outputBuffer.String()
 
@@ -507,6 +632,106 @@ func (s *Session) readOutput(ctx context.Context, command string) (*ExecResult, 
 	}
 }
 
+// stripANSI removes ANSI escape sequences from a string.
+func stripANSI(s string) string {
+	// Match ANSI escape sequences: ESC[ followed by parameters and a letter
+	ansiRegex := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-Za-z]`)
+	return ansiRegex.ReplaceAllString(s, "")
+}
+
+// isContinuationPrompt checks if output ends with a shell continuation prompt (PS2).
+// This is typically "> " shown when a command spans multiple lines.
+func isContinuationPrompt(output string) bool {
+	output = strings.TrimRight(output, "\r\n")
+	// Common PS2 patterns: "> " or just ">"
+	return strings.HasSuffix(output, "> ") || strings.HasSuffix(output, ">")
+}
+
+// drainOutput drains any remaining output from the PTY after an interrupt or timeout.
+func (s *Session) drainOutput() {
+	buf := make([]byte, 4096)
+	// Read with short deadline until we get no more data
+	for i := 0; i < 10; i++ { // Max 10 attempts (1 second total)
+		s.pty.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		n, err := s.pty.Read(buf)
+		if err != nil || n == 0 {
+			break
+		}
+	}
+}
+
+// forceKillCommand terminates any running command.
+// Uses control plane (pkill) if available, falls back to Ctrl+C and 'q'.
+func (s *Session) forceKillCommand() {
+	// Strategy 1: Use control plane to kill all processes on this PTY
+	if s.controlSession != nil && s.PTYName != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		// Kill all processes on the PTY
+		if err := s.controlSession.KillPTY(ctx, s.PTYName); err == nil {
+			// Give processes time to die
+			time.Sleep(100 * time.Millisecond)
+			s.drainOutput()
+
+			// Send newline to get fresh prompt
+			s.pty.WriteString("\n")
+			time.Sleep(100 * time.Millisecond)
+			s.drainOutput()
+			return
+		}
+		// If control plane fails, fall through to manual methods
+	}
+
+	// Fallback: Manual interrupt methods
+	s.forceKillCommandFallback()
+}
+
+// forceKillCommandFallback uses Ctrl+C and 'q' to terminate commands.
+// Used when control plane is not available.
+func (s *Session) forceKillCommandFallback() {
+	buf := make([]byte, 4096)
+
+	// Send Ctrl+C multiple times with delays
+	for i := 0; i < 3; i++ {
+		s.pty.Interrupt()
+		time.Sleep(50 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// Drain output after interrupts
+	s.drainOutput()
+
+	// Check if still producing output
+	s.pty.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+	n, _ := s.pty.Read(buf)
+
+	if n > 0 {
+		// Send 'q' for apps like top, less that use q to quit
+		s.pty.WriteString("q")
+		time.Sleep(100 * time.Millisecond)
+		s.drainOutput()
+
+		// Check again
+		s.pty.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+		n, _ = s.pty.Read(buf)
+	}
+
+	if n > 0 {
+		// Final attempt: more Ctrl+C
+		for i := 0; i < 3; i++ {
+			s.pty.Interrupt()
+			time.Sleep(30 * time.Millisecond)
+		}
+		s.drainOutput()
+	}
+
+	// Send newline to get fresh prompt
+	s.pty.WriteString("\n")
+	time.Sleep(100 * time.Millisecond)
+	s.drainOutput()
+}
+
 // isTimeoutError checks if error is a timeout (works for both local and SSH).
 func isTimeoutError(err error) bool {
 	if err == nil {
@@ -532,17 +757,49 @@ func (s *Session) ProvideInput(input string) (*ExecResult, error) {
 	s.State = StateRunning
 	s.LastUsed = time.Now()
 
+	// For password prompts, wait until the program has disabled echo on the terminal
+	// (sudo disables echo AFTER printing the prompt - we must wait for it)
+	isPasswordPrompt := s.pendingPrompt != nil && s.pendingPrompt.Pattern.MaskInput
+	if isPasswordPrompt {
+		slog.Debug("waiting for echo disabled before password input")
+		s.waitForEchoDisabled()
+	}
+
 	// Write input followed by newline
-	if _, err := s.pty.WriteString(input + "\n"); err != nil {
+	lineEnding := "\n"
+	toWrite := input + lineEnding
+
+	slog.Debug("writing input to PTY",
+		"len", len(toWrite),
+		"isPassword", isPasswordPrompt,
+		"bytes", fmt.Sprintf("%v", []byte(toWrite)))
+
+	n, err := s.pty.WriteString(toWrite)
+	if err != nil {
+		slog.Error("failed to write input", "error", err)
 		s.State = StateAwaitingInput
 		return nil, fmt.Errorf("write input: %w", err)
 	}
+	slog.Debug("wrote input to PTY", "bytesWritten", n)
+
+	// Clear output buffer to avoid re-detecting the old prompt
+	s.outputBuffer.Reset()
+	s.pendingPrompt = nil
 
 	// Continue reading output
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	return s.readOutput(ctx, "")
+}
+
+// waitForEchoDisabled waits for the terminal to be ready for password input.
+// Programs like sudo print the prompt THEN disable echo. Per pexpect's approach,
+// a small fixed delay (50-100ms) is sufficient and simpler than polling stty.
+// See: https://pexpect.readthedocs.io/en/stable/commonissues.html
+func (s *Session) waitForEchoDisabled() {
+	// Pexpect uses 50ms delay by default, we use 100ms to be safe
+	time.Sleep(100 * time.Millisecond)
 }
 
 // Interrupt sends an interrupt signal to the session.
