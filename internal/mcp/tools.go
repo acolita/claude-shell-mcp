@@ -71,6 +71,11 @@ Interactive prompts are auto-detected:
 
 The session preserves state (cwd, env vars) across commands.
 
+IMPORTANT: When status is "awaiting_input" with prompt_type "password":
+- If sudo password is cached (from previous cache_for_sudo=true), it will be auto-injected
+- Otherwise, you MUST ask the user for their password before calling shell_provide_input
+- NEVER call shell_provide_input with an empty string for passwords
+
 LIMITATION: Commands with embedded literal newlines (heredocs, multi-line strings) may incorrectly trigger "awaiting_input" due to shell continuation prompts. Use escaped newlines instead:
 - Use printf "line1\nline2\n" instead of literal newlines
 - Use echo -e "line1\nline2" for multi-line output`),
@@ -96,7 +101,16 @@ Use this after shell_exec returns status "awaiting_input". A newline is automati
 
 For sudo passwords, set cache_for_sudo=true to cache the password for subsequent sudo commands in this session (cached for 5 minutes).
 
-Returns the same status types as shell_exec - the command may complete, request more input, or timeout.`),
+Returns the same status types as shell_exec - the command may complete, request more input, or timeout.
+
+CRITICAL: For password prompts (prompt_type: "password"), you MUST:
+1. First check if a cached sudo password exists (shell_session_status shows sudo_cached: true)
+2. If no cached password, ASK THE USER for their password BEFORE calling this tool
+3. NEVER send an empty string for password prompts - this will always fail
+4. Use cache_for_sudo=true when providing a sudo password to avoid repeated prompts
+
+For confirmation prompts (prompt_type: "confirmation"), provide "yes", "y", "Y", or "n" as appropriate.
+For interactive apps (prompt_type: "interactive"), provide the appropriate command (e.g., ":q!" for vim).`),
 		mcp.WithString("session_id",
 			mcp.Required(),
 			mcp.Description("The session ID"),
