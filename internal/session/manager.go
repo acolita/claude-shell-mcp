@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/acolita/claude-shell-mcp/internal/config"
 )
@@ -108,6 +109,44 @@ func (m *Manager) List() []string {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+// SessionInfo contains summary information about a session.
+type SessionInfo struct {
+	ID        string `json:"session_id"`
+	Mode      string `json:"mode"`
+	Host      string `json:"host,omitempty"`
+	User      string `json:"user,omitempty"`
+	State     string `json:"state"`
+	Cwd       string `json:"cwd,omitempty"`
+	CreatedAt string `json:"created_at"`
+	LastUsed  string `json:"last_used"`
+	IdleFor   string `json:"idle_for"`
+}
+
+// ListDetailed returns detailed information about all active sessions.
+func (m *Manager) ListDetailed() []SessionInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	infos := make([]SessionInfo, 0, len(m.sessions))
+	now := time.Now()
+
+	for _, sess := range m.sessions {
+		info := SessionInfo{
+			ID:        sess.ID,
+			Mode:      sess.Mode,
+			Host:      sess.Host,
+			User:      sess.User,
+			State:     string(sess.State),
+			Cwd:       sess.Cwd,
+			CreatedAt: sess.CreatedAt.Format(time.RFC3339),
+			LastUsed:  sess.LastUsed.Format(time.RFC3339),
+			IdleFor:   now.Sub(sess.LastUsed).Round(time.Second).String(),
+		}
+		infos = append(infos, info)
+	}
+	return infos
 }
 
 // SessionCount returns the number of active sessions.

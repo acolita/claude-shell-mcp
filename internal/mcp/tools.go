@@ -13,6 +13,7 @@ import (
 // registerTools registers all MCP tools with the server.
 func (s *Server) registerTools() {
 	s.mcpServer.AddTool(shellSessionCreateTool(), s.handleShellSessionCreate)
+	s.mcpServer.AddTool(shellSessionListTool(), s.handleShellSessionList)
 	s.mcpServer.AddTool(shellExecTool(), s.handleShellExec)
 	s.mcpServer.AddTool(shellProvideInputTool(), s.handleShellProvideInput)
 	s.mcpServer.AddTool(shellInterruptTool(), s.handleShellInterrupt)
@@ -52,6 +53,24 @@ Returns a session_id to use with other shell_* tools.`),
 		mcp.WithString("key_path",
 			mcp.Description("Path to SSH private key file (e.g., ~/.ssh/id_ed25519)"),
 		),
+	)
+}
+
+func shellSessionListTool() mcp.Tool {
+	return mcp.NewTool("shell_session_list",
+		mcp.WithDescription(`List all active shell sessions.
+
+Returns a list of all open sessions with their details including:
+- session_id: The ID to use with other shell_* tools
+- mode: "local" or "ssh"
+- host/user: Connection info for SSH sessions
+- state: Current state (idle, running, awaiting_input)
+- cwd: Current working directory
+- created_at: When the session was created
+- last_used: When the session was last used
+- idle_for: How long the session has been idle
+
+Use this to recover session IDs after context compaction, or to find and close orphaned sessions.`),
 	)
 }
 
@@ -246,6 +265,17 @@ func (s *Server) handleShellSessionCreate(ctx context.Context, req mcp.CallToolR
 
 	if path := s.recordingManager.GetRecordingPath(sess.ID); path != "" {
 		result["recording_path"] = path
+	}
+
+	return jsonResult(result)
+}
+
+func (s *Server) handleShellSessionList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	sessions := s.sessionManager.ListDetailed()
+
+	result := map[string]any{
+		"count":    len(sessions),
+		"sessions": sessions,
 	}
 
 	return jsonResult(result)
