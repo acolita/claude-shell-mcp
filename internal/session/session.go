@@ -470,6 +470,26 @@ func (s *Session) Exec(command string, timeoutMs int) (*ExecResult, error) {
 		}
 	}
 
+	// Use control plane to verify PTY is alive (if available)
+	if s.controlSession != nil && s.PTYName != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		alive, err := s.controlSession.IsPTYAlive(ctx, s.PTYName)
+		cancel()
+		if err == nil && !alive {
+			slog.Warn("PTY has no processes, session is dead - attempting reconnect",
+				slog.String("session_id", s.ID),
+				slog.String("pty", s.PTYName),
+			)
+			if s.Mode == "ssh" {
+				if err := s.reconnectSSH(); err != nil {
+					return nil, fmt.Errorf("session dead and reconnect failed: %w", err)
+				}
+			} else {
+				return nil, fmt.Errorf("local session is dead (PTY has no processes)")
+			}
+		}
+	}
+
 	s.State = StateRunning
 	s.LastUsed = time.Now()
 	s.outputBuffer.Reset()
@@ -479,8 +499,25 @@ func (s *Session) Exec(command string, timeoutMs int) (*ExecResult, error) {
 
 	// Write command to PTY
 	if _, err := s.pty.WriteString(fullCommand); err != nil {
-		s.State = StateIdle
-		return nil, fmt.Errorf("write command: %w", err)
+		// Check if this is a broken connection (EOF, closed pipe, etc.)
+		if isConnectionBroken(err) && s.Mode == "ssh" {
+			slog.Warn("SSH connection broken, attempting reconnect",
+				slog.String("session_id", s.ID),
+				slog.String("error", err.Error()),
+			)
+			if reconnErr := s.reconnectSSH(); reconnErr != nil {
+				s.State = StateIdle
+				return nil, fmt.Errorf("connection lost and reconnect failed: %w (original: %v)", reconnErr, err)
+			}
+			// Retry the write after reconnect
+			if _, err := s.pty.WriteString(fullCommand); err != nil {
+				s.State = StateIdle
+				return nil, fmt.Errorf("write command after reconnect: %w", err)
+			}
+		} else {
+			s.State = StateIdle
+			return nil, fmt.Errorf("write command: %w", err)
+		}
 	}
 
 	// For multi-line commands, give bash time to process all lines
@@ -742,6 +779,23 @@ func isTimeoutError(err error) bool {
 		strings.Contains(err.Error(), "i/o timeout")
 }
 
+// isConnectionBroken checks if an error indicates the connection/PTY is dead.
+func isConnectionBroken(err error) bool {
+	if err == nil {
+		return false
+	}
+	if err == io.EOF {
+		return true
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "EOF") ||
+		strings.Contains(errStr, "broken pipe") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "use of closed") ||
+		strings.Contains(errStr, "closed network connection") ||
+		strings.Contains(errStr, "channel closed")
+}
+
 // ProvideInput provides input to a session waiting for input.
 func (s *Session) ProvideInput(input string) (*ExecResult, error) {
 	s.mu.Lock()
@@ -778,6 +832,17 @@ func (s *Session) ProvideInput(input string) (*ExecResult, error) {
 	n, err := s.pty.WriteString(toWrite)
 	if err != nil {
 		slog.Error("failed to write input", "error", err)
+		// Check if connection is broken and attempt reconnect for SSH
+		if isConnectionBroken(err) && s.Mode == "ssh" {
+			slog.Warn("SSH connection broken during input, attempting reconnect",
+				slog.String("session_id", s.ID),
+			)
+			s.State = StateIdle // Reset state before reconnect
+			if reconnErr := s.reconnectSSH(); reconnErr != nil {
+				return nil, fmt.Errorf("connection lost and reconnect failed: %w (original: %v)", reconnErr, err)
+			}
+			return nil, fmt.Errorf("connection was lost (reconnected - please retry command)")
+		}
 		s.State = StateAwaitingInput
 		return nil, fmt.Errorf("write input: %w", err)
 	}
@@ -838,13 +903,19 @@ func (s *Session) Close() error {
 
 	if s.pty != nil {
 		if err := s.pty.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("close pty: %w", err))
+			// Ignore EOF/broken connection errors - connection is already dead
+			if !isConnectionBroken(err) {
+				errs = append(errs, fmt.Errorf("close pty: %w", err))
+			}
 		}
 	}
 
 	if s.sshClient != nil {
 		if err := s.sshClient.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("close ssh: %w", err))
+			// Ignore EOF/broken connection errors - connection is already dead
+			if !isConnectionBroken(err) {
+				errs = append(errs, fmt.Errorf("close ssh: %w", err))
+			}
 		}
 	}
 

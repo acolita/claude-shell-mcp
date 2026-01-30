@@ -296,6 +296,15 @@ func (cs *ControlSession) IsProcessRunning(ctx context.Context, pid string) (boo
 	return strings.TrimSpace(output) != "", nil
 }
 
+// IsPTYAlive checks if a PTY has any processes (i.e., shell is alive).
+func (cs *ControlSession) IsPTYAlive(ctx context.Context, ptyName string) (bool, error) {
+	pids, err := cs.GetPTYProcesses(ctx, ptyName)
+	if err != nil {
+		return false, err
+	}
+	return len(pids) > 0, nil
+}
+
 // Host returns the host this control session is connected to.
 func (cs *ControlSession) Host() string {
 	return cs.host
