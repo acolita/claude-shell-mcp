@@ -1202,6 +1202,10 @@ type ExecResult struct {
 	Hint                 string            `json:"hint,omitempty"`
 	SudoAuthenticated    bool              `json:"sudo_authenticated,omitempty"`
 	SudoExpiresInSeconds int               `json:"sudo_expires_in_seconds,omitempty"`
+	// Output truncation info (when tail_lines or head_lines is used)
+	Truncated  bool `json:"truncated,omitempty"`
+	TotalLines int  `json:"total_lines,omitempty"`
+	ShownLines int  `json:"shown_lines,omitempty"`
 }
 
 // SFTPClient returns an SFTP client for file transfer operations.

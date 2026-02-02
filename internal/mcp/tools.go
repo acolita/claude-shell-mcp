@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/acolita/claude-shell-mcp/internal/session"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -90,6 +91,16 @@ Interactive prompts are auto-detected:
 
 The session preserves state (cwd, env vars) across commands.
 
+OUTPUT LIMITING (built-in tail/head):
+For commands that produce long output (logs, large files, build output), use tail_lines or head_lines to limit the response. This is more reliable than piping to tail/head and avoids separate commands:
+- tail_lines: Return only the last N lines (like "| tail -N")
+- head_lines: Return only the first N lines (like "| head -N")
+When output is truncated, the response includes:
+- truncated: true
+- total_lines: Original line count before truncation
+- shown_lines: Number of lines actually returned
+Example: shell_exec(command="cat /var/log/syslog", tail_lines=50) returns last 50 lines with truncation info.
+
 IMPORTANT: When status is "awaiting_input" with prompt_type "password":
 - If sudo password is cached (from previous cache_for_sudo=true), it will be auto-injected
 - Otherwise, you MUST ask the user for their password before calling shell_provide_input
@@ -108,6 +119,12 @@ LIMITATION: Commands with embedded literal newlines (heredocs, multi-line string
 		),
 		mcp.WithNumber("timeout_ms",
 			mcp.Description("Command timeout in milliseconds (default: 30000)"),
+		),
+		mcp.WithNumber("tail_lines",
+			mcp.Description("Return only the last N lines of output (built-in tail). Use for logs, long output. Cannot be combined with head_lines."),
+		),
+		mcp.WithNumber("head_lines",
+			mcp.Description("Return only the first N lines of output (built-in head). Use for previewing large files. Cannot be combined with tail_lines."),
 		),
 	)
 }
@@ -285,12 +302,17 @@ func (s *Server) handleShellExec(ctx context.Context, req mcp.CallToolRequest) (
 	sessionID := mcp.ParseString(req, "session_id", "")
 	command := mcp.ParseString(req, "command", "")
 	timeoutMs := mcp.ParseInt(req, "timeout_ms", 30000)
+	tailLines := mcp.ParseInt(req, "tail_lines", 0)
+	headLines := mcp.ParseInt(req, "head_lines", 0)
 
 	if sessionID == "" {
 		return mcp.NewToolResultError("session_id is required"), nil
 	}
 	if command == "" {
 		return mcp.NewToolResultError("command is required"), nil
+	}
+	if tailLines > 0 && headLines > 0 {
+		return mcp.NewToolResultError("cannot use both tail_lines and head_lines"), nil
 	}
 
 	// Check command filter
@@ -346,6 +368,11 @@ func (s *Server) handleShellExec(ctx context.Context, req mcp.CallToolRequest) (
 			result.SudoAuthenticated = true
 			result.SudoExpiresInSeconds = int(s.sudoCache.ExpiresIn(sessionID).Seconds())
 		}
+	}
+
+	// Apply output limiting (tail_lines or head_lines)
+	if result.Stdout != "" && (tailLines > 0 || headLines > 0) {
+		result.Stdout, result.Truncated, result.TotalLines, result.ShownLines = truncateOutput(result.Stdout, tailLines, headLines)
 	}
 
 	return jsonResult(result)
@@ -494,4 +521,39 @@ func jsonResult(v any) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return mcp.NewToolResultText(string(data)), nil
+}
+
+// truncateOutput applies tail_lines or head_lines limiting to output.
+// Returns: (truncatedOutput, wasTruncated, totalLines, shownLines)
+func truncateOutput(output string, tailLines, headLines int) (string, bool, int, int) {
+	lines := strings.Split(output, "\n")
+	totalLines := len(lines)
+
+	// Remove trailing empty line if present (split artifact)
+	if totalLines > 0 && lines[totalLines-1] == "" {
+		lines = lines[:totalLines-1]
+		totalLines = len(lines)
+	}
+
+	if tailLines > 0 {
+		if tailLines >= totalLines {
+			// No truncation needed
+			return output, false, totalLines, totalLines
+		}
+		// Take last N lines
+		truncated := lines[totalLines-tailLines:]
+		return strings.Join(truncated, "\n"), true, totalLines, tailLines
+	}
+
+	if headLines > 0 {
+		if headLines >= totalLines {
+			// No truncation needed
+			return output, false, totalLines, totalLines
+		}
+		// Take first N lines
+		truncated := lines[:headLines]
+		return strings.Join(truncated, "\n"), true, totalLines, headLines
+	}
+
+	return output, false, totalLines, totalLines
 }
