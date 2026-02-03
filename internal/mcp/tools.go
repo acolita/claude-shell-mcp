@@ -91,6 +91,13 @@ Interactive prompts are auto-detected:
 
 The session preserves state (cwd, env vars) across commands.
 
+OUTPUT ISOLATION:
+Each command uses unique markers to separate its output from background noise:
+- stdout: Output from this specific command
+- async_output: Any output from background processes or previous commands (if present)
+- command_id: Unique ID for this command execution
+This prevents confusion when background processes produce output asynchronously.
+
 OUTPUT LIMITING (built-in tail/head):
 For commands that produce long output (logs, large files, build output), use tail_lines or head_lines to limit the response. This is more reliable than piping to tail/head and avoids separate commands:
 - tail_lines: Return only the last N lines (like "| tail -N")

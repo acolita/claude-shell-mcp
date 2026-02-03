@@ -4,6 +4,8 @@ package session
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
@@ -30,7 +32,15 @@ const (
 	StateClosed        State = "closed"
 )
 
-// endMarker is used to detect command completion.
+// Command markers for output isolation.
+// Each command gets a unique ID to separate its output from async background data.
+const (
+	startMarkerPrefix = "___CMD_START_"
+	endMarkerPrefix   = "___CMD_END_"
+	markerSuffix      = "___"
+)
+
+// Legacy end marker for backward compatibility
 const endMarker = "___CMD_END_MARKER___"
 
 // Session represents a shell session.
@@ -498,8 +508,14 @@ func (s *Session) Exec(command string, timeoutMs int) (*ExecResult, error) {
 	// This prevents stale output from previous commands contaminating the new output
 	s.drainPendingOutput()
 
-	// Create command with end marker for completion detection
-	fullCommand := fmt.Sprintf("%s; echo '%s'$?\n", command, endMarker)
+	// Generate unique command ID for marker-based output isolation
+	cmdID := generateCommandID()
+	startMarker := startMarkerPrefix + cmdID + markerSuffix
+	endMarker := endMarkerPrefix + cmdID + markerSuffix
+
+	// Create command wrapped with start/end markers for output isolation
+	// Format: echo 'START'; command; echo 'END'$?
+	fullCommand := fmt.Sprintf("echo '%s'; %s; echo '%s'$?\n", startMarker, command, endMarker)
 
 	// Write command to PTY
 	if _, err := s.pty.WriteString(fullCommand); err != nil {
@@ -545,7 +561,7 @@ func (s *Session) Exec(command string, timeoutMs int) (*ExecResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	return s.readOutput(ctx, command)
+	return s.readOutputWithMarkers(ctx, command, cmdID)
 }
 
 // readOutput reads output from PTY until completion or prompt detection.
@@ -682,6 +698,258 @@ func (s *Session) readOutput(ctx context.Context, command string) (*ExecResult, 
 	}
 }
 
+// readOutputWithMarkers reads output using command markers for isolation.
+// Output before the start marker is captured as async_output (background noise).
+// Output between start and end markers is the actual command output.
+func (s *Session) readOutputWithMarkers(ctx context.Context, command string, cmdID string) (*ExecResult, error) {
+	buf := make([]byte, 4096)
+	stallCount := 0
+	const stallThreshold = 15 // 15 x 100ms = 1.5 seconds of no output
+
+	startMarker := startMarkerPrefix + cmdID + markerSuffix
+	endMarker := endMarkerPrefix + cmdID + markerSuffix
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Aggressively kill the running command
+			s.forceKillCommand()
+			s.State = StateIdle
+			asyncOutput, stdout := s.parseMarkedOutput(s.outputBuffer.String(), startMarker, endMarker, command)
+			return &ExecResult{
+				Status:      "timeout",
+				Stdout:      stdout,
+				AsyncOutput: asyncOutput,
+				CommandID:   cmdID,
+			}, nil
+		default:
+		}
+
+		// Set short read deadline for non-blocking reads
+		s.pty.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+
+		n, err := s.pty.Read(buf)
+		if err != nil {
+			if os.IsTimeout(err) || err == io.EOF || isTimeoutError(err) {
+				// Check if we have an end marker
+				output := s.outputBuffer.String()
+				if exitCode, found := s.extractExitCodeWithMarker(output, endMarker); found {
+					s.State = StateIdle
+					s.updateCwd()
+					asyncOutput, stdout := s.parseMarkedOutput(output, startMarker, endMarker, command)
+					return &ExecResult{
+						Status:      "completed",
+						ExitCode:    &exitCode,
+						Stdout:      stdout,
+						AsyncOutput: asyncOutput,
+						CommandID:   cmdID,
+						Cwd:         s.Cwd,
+					}, nil
+				}
+
+				// Increment stall counter when no data received
+				stallCount++
+
+				// After stall threshold, check if there's meaningful output
+				if stallCount >= stallThreshold {
+					asyncOutput, stdout := s.parseMarkedOutput(output, startMarker, endMarker, command)
+					// Only trigger awaiting_input if there's actual output
+					if len(strings.TrimSpace(stdout)) > 0 || len(strings.TrimSpace(asyncOutput)) > 0 {
+						// Check if this looks like a shell continuation prompt (PS2)
+						if isContinuationPrompt(output) && strings.Contains(command, "\n") {
+							stallCount = stallThreshold / 2
+							continue
+						}
+
+						// Check for interactive prompt patterns
+						strippedOutput := stripANSI(output)
+						if detection := s.promptDetector.Detect(strippedOutput); detection != nil {
+							s.State = StateAwaitingInput
+							s.pendingPrompt = detection
+							return &ExecResult{
+								Status:        "awaiting_input",
+								Stdout:        stdout,
+								AsyncOutput:   asyncOutput,
+								CommandID:     cmdID,
+								PromptType:    string(detection.Pattern.Type),
+								PromptText:    detection.MatchedText,
+								ContextBuffer: detection.ContextBuffer,
+								MaskInput:     detection.Pattern.MaskInput,
+								Hint:          detection.Hint(),
+							}, nil
+						}
+
+						// If output exists but no pattern matched, treat as stalled interactive
+						s.State = StateAwaitingInput
+						return &ExecResult{
+							Status:        "awaiting_input",
+							Stdout:        stdout,
+							AsyncOutput:   asyncOutput,
+							CommandID:     cmdID,
+							PromptType:    "interactive",
+							PromptText:    "",
+							ContextBuffer: output,
+							Hint:          "Command appears to be waiting for input. Send input or interrupt with shell_interrupt.",
+						}, nil
+					}
+				}
+
+				continue
+			}
+			s.State = StateIdle
+			return nil, fmt.Errorf("read output: %w", err)
+		}
+
+		if n > 0 {
+			// Reset stall counter when we receive data
+			stallCount = 0
+			s.outputBuffer.Write(buf[:n])
+			output := s.outputBuffer.String()
+
+			// Check for command completion (end marker present)
+			if exitCode, found := s.extractExitCodeWithMarker(output, endMarker); found {
+				s.State = StateIdle
+				s.updateCwd()
+				asyncOutput, stdout := s.parseMarkedOutput(output, startMarker, endMarker, command)
+				return &ExecResult{
+					Status:      "completed",
+					ExitCode:    &exitCode,
+					Stdout:      stdout,
+					AsyncOutput: asyncOutput,
+					CommandID:   cmdID,
+					Cwd:         s.Cwd,
+				}, nil
+			}
+
+			// Check for interactive prompt
+			if detection := s.promptDetector.Detect(output); detection != nil {
+				s.State = StateAwaitingInput
+				s.pendingPrompt = detection
+				asyncOutput, stdout := s.parseMarkedOutput(output, startMarker, endMarker, command)
+				return &ExecResult{
+					Status:        "awaiting_input",
+					Stdout:        stdout,
+					AsyncOutput:   asyncOutput,
+					CommandID:     cmdID,
+					PromptType:    string(detection.Pattern.Type),
+					PromptText:    detection.MatchedText,
+					ContextBuffer: detection.ContextBuffer,
+					MaskInput:     detection.Pattern.MaskInput,
+					Hint:          detection.Hint(),
+				}, nil
+			}
+		}
+	}
+}
+
+// parseMarkedOutput separates async output from command output using markers.
+// Returns (asyncOutput, commandOutput).
+func (s *Session) parseMarkedOutput(output, startMarker, endMarker, command string) (string, string) {
+	output = strings.ReplaceAll(output, "\r\n", "\n")
+	output = strings.ReplaceAll(output, "\r", "")
+
+	var asyncOutput, cmdOutput string
+
+	// Find start marker position
+	startIdx := strings.Index(output, startMarker)
+	if startIdx == -1 {
+		// No start marker yet - all output is async/pre-command
+		return s.cleanAsyncOutput(output), ""
+	}
+
+	// Everything before start marker is async output
+	if startIdx > 0 {
+		asyncOutput = s.cleanAsyncOutput(output[:startIdx])
+	}
+
+	// Find end marker position
+	afterStart := output[startIdx+len(startMarker):]
+	endIdx := strings.Index(afterStart, endMarker)
+	if endIdx == -1 {
+		// No end marker yet - everything after start is command output (in progress)
+		cmdOutput = s.cleanCommandOutput(afterStart, command, startMarker, endMarker)
+	} else {
+		// Extract output between markers
+		cmdOutput = s.cleanCommandOutput(afterStart[:endIdx], command, startMarker, endMarker)
+	}
+
+	return asyncOutput, cmdOutput
+}
+
+// cleanAsyncOutput cleans up async output (removes shell prompts, trims whitespace).
+func (s *Session) cleanAsyncOutput(output string) string {
+	lines := strings.Split(output, "\n")
+	var cleaned []string
+
+	for _, line := range lines {
+		// Skip shell prompt lines
+		if strings.HasPrefix(line, "$ ") {
+			continue
+		}
+		// Skip empty lines at start/end
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			cleaned = append(cleaned, line)
+		}
+	}
+
+	result := strings.Join(cleaned, "\n")
+	return strings.TrimSpace(result)
+}
+
+// cleanCommandOutput cleans the command output between markers.
+func (s *Session) cleanCommandOutput(output, command, startMarker, endMarker string) string {
+	lines := strings.Split(output, "\n")
+	var cleaned []string
+
+	for _, line := range lines {
+		// Skip prompt lines
+		if strings.HasPrefix(line, "$ ") {
+			continue
+		}
+		// Skip marker echo lines
+		if strings.Contains(line, startMarker) || strings.Contains(line, endMarker) {
+			continue
+		}
+		// Skip command echo (the wrapped command itself)
+		if command != "" && strings.Contains(line, "echo '"+startMarkerPrefix) {
+			continue
+		}
+
+		cleaned = append(cleaned, line)
+	}
+
+	// Trim leading/trailing empty lines
+	for len(cleaned) > 0 && strings.TrimSpace(cleaned[0]) == "" {
+		cleaned = cleaned[1:]
+	}
+	for len(cleaned) > 0 && strings.TrimSpace(cleaned[len(cleaned)-1]) == "" {
+		cleaned = cleaned[:len(cleaned)-1]
+	}
+
+	return strings.Join(cleaned, "\n")
+}
+
+// extractExitCodeWithMarker extracts exit code from the specific end marker.
+func (s *Session) extractExitCodeWithMarker(output, endMarker string) (int, bool) {
+	output = strings.ReplaceAll(output, "\r\n", "\n")
+	output = strings.ReplaceAll(output, "\r", "\n")
+
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, endMarker) {
+			rest := strings.TrimPrefix(line, endMarker)
+			var exitCode int
+			if _, err := fmt.Sscanf(rest, "%d", &exitCode); err == nil {
+				return exitCode, true
+			}
+		}
+	}
+
+	return 0, false
+}
+
 // stripANSI removes ANSI escape sequences from a string.
 func stripANSI(s string) string {
 	// Match ANSI escape sequences: ESC[ followed by parameters and a letter
@@ -733,6 +1001,16 @@ func (s *Session) drainPendingOutput() {
 			)
 		}
 	}
+}
+
+// generateCommandID generates a unique 8-character hex ID for command markers.
+func generateCommandID() string {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp-based ID if crypto/rand fails
+		return fmt.Sprintf("%08x", time.Now().UnixNano()&0xFFFFFFFF)
+	}
+	return hex.EncodeToString(b)
 }
 
 // waitForCommandEcho waits until the command echo appears in the PTY output.
@@ -1301,6 +1579,10 @@ type ExecResult struct {
 	Truncated  bool `json:"truncated,omitempty"`
 	TotalLines int  `json:"total_lines,omitempty"`
 	ShownLines int  `json:"shown_lines,omitempty"`
+	// Async output from background processes (not from this command)
+	AsyncOutput string `json:"async_output,omitempty"`
+	// Command ID used for marker-based output isolation
+	CommandID string `json:"command_id,omitempty"`
 }
 
 // SFTPClient returns an SFTP client for file transfer operations.
