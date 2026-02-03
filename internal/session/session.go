@@ -554,6 +554,14 @@ func (s *Session) readOutput(ctx context.Context, command string) (*ExecResult, 
 	stallCount := 0
 	const stallThreshold = 15 // 15 x 100ms = 1.5 seconds of no output
 
+	// Phase 1: Wait for command echo before capturing "real" output
+	// This prevents async background output from contaminating our command's output
+	commandEchoSeen := command == "" // Skip echo detection for ProvideInput (empty command)
+	if !commandEchoSeen {
+		commandEchoSeen = s.waitForCommandEcho(ctx, command)
+		// Even if echo wasn't seen (timeout), continue - the command may have completed very fast
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -725,6 +733,64 @@ func (s *Session) drainPendingOutput() {
 			)
 		}
 	}
+}
+
+// waitForCommandEcho waits until the command echo appears in the PTY output.
+// This helps filter out async background output that may arrive between sending
+// the command and the shell actually executing it.
+// Returns true if echo was found, false if timeout/context cancelled.
+func (s *Session) waitForCommandEcho(ctx context.Context, command string) bool {
+	if command == "" {
+		return true
+	}
+
+	// Use first 40 chars of command for matching (enough to be unique, handles long commands)
+	echoPrefix := command
+	if len(echoPrefix) > 40 {
+		echoPrefix = echoPrefix[:40]
+	}
+
+	buf := make([]byte, 4096)
+	maxAttempts := 20 // 20 x 50ms = 1 second max wait for echo
+
+	for i := 0; i < maxAttempts; i++ {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+		}
+
+		s.pty.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+		n, err := s.pty.Read(buf)
+		if err != nil && !os.IsTimeout(err) && !isTimeoutError(err) {
+			// Real error, give up
+			return false
+		}
+
+		if n > 0 {
+			s.outputBuffer.Write(buf[:n])
+			output := s.outputBuffer.String()
+
+			// Check if command echo is present (shell echoes the command back)
+			if strings.Contains(output, echoPrefix) {
+				slog.Debug("command echo detected",
+					slog.String("session_id", s.ID),
+				)
+				return true
+			}
+
+			// Also check for end marker (command completed very quickly)
+			if strings.Contains(output, endMarker) {
+				return true
+			}
+		}
+	}
+
+	// Timeout waiting for echo - log but continue (command might have started)
+	slog.Debug("timeout waiting for command echo, continuing",
+		slog.String("session_id", s.ID),
+	)
+	return false
 }
 
 // forceKillCommand terminates any running command.
