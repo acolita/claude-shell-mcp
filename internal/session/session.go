@@ -1221,6 +1221,7 @@ func (s *Session) Close() error {
 }
 
 // extractExitCode extracts the exit code from output if the end marker is present.
+// Supports both legacy marker and new dynamic markers.
 func (s *Session) extractExitCode(output string) (int, bool) {
 	output = strings.ReplaceAll(output, "\r\n", "\n")
 	output = strings.ReplaceAll(output, "\r", "\n")
@@ -1228,11 +1229,24 @@ func (s *Session) extractExitCode(output string) (int, bool) {
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
+		// Check legacy marker
 		if strings.HasPrefix(line, endMarker) {
 			rest := strings.TrimPrefix(line, endMarker)
 			var exitCode int
 			if _, err := fmt.Sscanf(rest, "%d", &exitCode); err == nil {
 				return exitCode, true
+			}
+		}
+		// Check new dynamic markers (___CMD_END_xxx___N)
+		if strings.HasPrefix(line, endMarkerPrefix) {
+			// Find the marker suffix and extract exit code after it
+			suffixIdx := strings.Index(line, markerSuffix)
+			if suffixIdx != -1 {
+				rest := line[suffixIdx+len(markerSuffix):]
+				var exitCode int
+				if _, err := fmt.Sscanf(rest, "%d", &exitCode); err == nil {
+					return exitCode, true
+				}
 			}
 		}
 	}
@@ -1260,7 +1274,14 @@ func (s *Session) cleanOutput(output, command string) string {
 			continue
 		}
 
+		// Skip legacy end marker
 		if strings.Contains(line, endMarker) {
+			continue
+		}
+
+		// Skip new dynamic markers (___CMD_START_xxx___ and ___CMD_END_xxx___N)
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, startMarkerPrefix) || strings.HasPrefix(trimmed, endMarkerPrefix) {
 			continue
 		}
 
