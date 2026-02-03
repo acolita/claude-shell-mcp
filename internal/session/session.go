@@ -839,30 +839,55 @@ func (s *Session) parseMarkedOutput(output, startMarker, endMarker, command stri
 
 	var asyncOutput, cmdOutput string
 
-	// Find start marker position
-	startIdx := strings.Index(output, startMarker)
+	// Find start marker on its own line (not within the echoed command)
+	// The marker appears as: \n___CMD_START_xxx___\n (output from echo command)
+	// NOT within: echo '___CMD_START_xxx___'; ... (the command being echoed)
+	startIdx := findMarkerOnOwnLine(output, startMarker)
 	if startIdx == -1 {
 		// No start marker yet - all output is async/pre-command
 		return s.cleanAsyncOutput(output), ""
 	}
 
-	// Everything before start marker is async output
+	// Everything before start marker line is async output
 	if startIdx > 0 {
 		asyncOutput = s.cleanAsyncOutput(output[:startIdx])
 	}
 
-	// Find end marker position
+	// Find end marker on its own line
 	afterStart := output[startIdx+len(startMarker):]
-	endIdx := strings.Index(afterStart, endMarker)
+	// Skip the newline after start marker
+	if len(afterStart) > 0 && afterStart[0] == '\n' {
+		afterStart = afterStart[1:]
+	}
+
+	endIdx := findMarkerOnOwnLine(afterStart, endMarker)
 	if endIdx == -1 {
 		// No end marker yet - everything after start is command output (in progress)
-		cmdOutput = s.cleanCommandOutput(afterStart, command, startMarker, endMarker)
+		cmdOutput = strings.TrimSpace(afterStart)
 	} else {
 		// Extract output between markers
-		cmdOutput = s.cleanCommandOutput(afterStart[:endIdx], command, startMarker, endMarker)
+		cmdOutput = strings.TrimSpace(afterStart[:endIdx])
 	}
 
 	return asyncOutput, cmdOutput
+}
+
+// findMarkerOnOwnLine finds a marker that appears at the start of a line.
+// Returns the index of the marker, or -1 if not found on its own line.
+func findMarkerOnOwnLine(output, marker string) int {
+	// Check if output starts with marker
+	if strings.HasPrefix(output, marker) {
+		return 0
+	}
+
+	// Look for marker after a newline (on its own line)
+	search := "\n" + marker
+	idx := strings.Index(output, search)
+	if idx != -1 {
+		return idx + 1 // Return position of marker, not the newline
+	}
+
+	return -1
 }
 
 // cleanAsyncOutput cleans up async output (removes shell prompts, trims whitespace).
@@ -887,36 +912,25 @@ func (s *Session) cleanAsyncOutput(output string) string {
 }
 
 // cleanCommandOutput cleans the command output between markers.
+// With proper marker parsing, this is now simpler - just trim and remove end marker artifacts.
 func (s *Session) cleanCommandOutput(output, command, startMarker, endMarker string) string {
+	// Output between markers should already be clean, just trim
+	output = strings.TrimSpace(output)
+
+	// Remove any trailing end marker with exit code (e.g., "___CMD_END_xxx___0")
 	lines := strings.Split(output, "\n")
 	var cleaned []string
 
 	for _, line := range lines {
-		// Skip prompt lines
-		if strings.HasPrefix(line, "$ ") {
+		// Skip lines that are just the end marker with exit code
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, endMarkerPrefix) {
 			continue
 		}
-		// Skip marker echo lines
-		if strings.Contains(line, startMarker) || strings.Contains(line, endMarker) {
-			continue
-		}
-		// Skip command echo (the wrapped command itself)
-		if command != "" && strings.Contains(line, "echo '"+startMarkerPrefix) {
-			continue
-		}
-
 		cleaned = append(cleaned, line)
 	}
 
-	// Trim leading/trailing empty lines
-	for len(cleaned) > 0 && strings.TrimSpace(cleaned[0]) == "" {
-		cleaned = cleaned[1:]
-	}
-	for len(cleaned) > 0 && strings.TrimSpace(cleaned[len(cleaned)-1]) == "" {
-		cleaned = cleaned[:len(cleaned)-1]
-	}
-
-	return strings.Join(cleaned, "\n")
+	return strings.TrimSpace(strings.Join(cleaned, "\n"))
 }
 
 // extractExitCodeWithMarker extracts exit code from the specific end marker.
