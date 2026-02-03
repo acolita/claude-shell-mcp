@@ -494,6 +494,10 @@ func (s *Session) Exec(command string, timeoutMs int) (*ExecResult, error) {
 	s.LastUsed = time.Now()
 	s.outputBuffer.Reset()
 
+	// Drain any pending output from PTY before sending new command
+	// This prevents stale output from previous commands contaminating the new output
+	s.drainPendingOutput()
+
 	// Create command with end marker for completion detection
 	fullCommand := fmt.Sprintf("%s; echo '%s'$?\n", command, endMarker)
 
@@ -694,6 +698,31 @@ func (s *Session) drainOutput() {
 		n, err := s.pty.Read(buf)
 		if err != nil || n == 0 {
 			break
+		}
+	}
+}
+
+// drainPendingOutput drains any stale output sitting in the PTY buffer.
+// This is called before sending a new command to prevent contamination from previous commands.
+// Uses short timeouts to avoid blocking if there's no pending data.
+func (s *Session) drainPendingOutput() {
+	if s.pty == nil {
+		return
+	}
+	buf := make([]byte, 4096)
+	// Quick drain with very short deadline - just grab whatever is already buffered
+	for i := 0; i < 3; i++ { // Max 3 attempts (150ms total)
+		s.pty.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+		n, err := s.pty.Read(buf)
+		if err != nil || n == 0 {
+			break
+		}
+		// Log if we found stale data (useful for debugging)
+		if n > 0 {
+			slog.Debug("drained stale PTY data",
+				slog.String("session_id", s.ID),
+				slog.Int("bytes", n),
+			)
 		}
 	}
 }
