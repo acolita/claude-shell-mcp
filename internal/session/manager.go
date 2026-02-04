@@ -15,6 +15,7 @@ import (
 type Manager struct {
 	sessions        map[string]*Session
 	controlSessions map[string]*ControlSession // key: "local" or hostname
+	store           *SessionStore              // persists session metadata for recovery
 	mu              sync.RWMutex
 	config          *config.Config
 }
@@ -24,6 +25,7 @@ func NewManager(cfg *config.Config) *Manager {
 	return &Manager{
 		sessions:        make(map[string]*Session),
 		controlSessions: make(map[string]*ControlSession),
+		store:           NewSessionStore(),
 		config:          cfg,
 	}
 }
@@ -66,18 +68,81 @@ func (m *Manager) Create(opts CreateOptions) (*Session, error) {
 	}
 
 	m.sessions[id] = sess
+
+	// Persist session metadata for recovery after MCP restart
+	m.store.Save(sess)
+
 	return sess, nil
 }
 
 // Get retrieves a session by ID.
+// If the session doesn't exist but we have stored metadata (e.g., after MCP restart),
+// it attempts to automatically recover the session.
 func (m *Manager) Get(id string) (*Session, error) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-
 	sess, ok := m.sessions[id]
+	m.mu.RUnlock()
+
+	if ok {
+		return sess, nil
+	}
+
+	// Session not in memory - try to recover from stored metadata
+	return m.recover(id)
+}
+
+// recover attempts to recreate a session from stored metadata.
+func (m *Manager) recover(id string) (*Session, error) {
+	meta, ok := m.store.Get(id)
 	if !ok {
 		return nil, fmt.Errorf("session not found: %s", id)
 	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Double-check in case another goroutine recovered it
+	if sess, ok := m.sessions[id]; ok {
+		return sess, nil
+	}
+
+	// Recreate the session with stored metadata
+	sess := &Session{
+		ID:      id, // Use the same ID!
+		State:   StateIdle,
+		Mode:    meta.Mode,
+		Host:    meta.Host,
+		Port:    meta.Port,
+		User:    meta.User,
+		KeyPath: meta.KeyPath,
+		Cwd:     meta.Cwd,
+		config:  m.config,
+	}
+
+	// Initialize the session (creates PTY/SSH connection)
+	if err := sess.Initialize(); err != nil {
+		// Failed to recover - remove stale metadata
+		m.store.Delete(id)
+		return nil, fmt.Errorf("failed to recover session %s: %w", id, err)
+	}
+
+	// Get or create control session
+	opts := CreateOptions{
+		Mode:    meta.Mode,
+		Host:    meta.Host,
+		Port:    meta.Port,
+		User:    meta.User,
+		KeyPath: meta.KeyPath,
+	}
+	if cs, err := m.getOrCreateControlSessionLocked(opts); err == nil {
+		sess.controlSession = cs
+	}
+
+	m.sessions[id] = sess
+
+	// Update stored metadata (cwd may have changed)
+	m.store.Save(sess)
+
 	return sess, nil
 }
 
@@ -88,6 +153,8 @@ func (m *Manager) Close(id string) error {
 
 	sess, ok := m.sessions[id]
 	if !ok {
+		// Session not in memory - also clean up any stale metadata
+		m.store.Delete(id)
 		return fmt.Errorf("session not found: %s", id)
 	}
 
@@ -96,6 +163,10 @@ func (m *Manager) Close(id string) error {
 	}
 
 	delete(m.sessions, id)
+
+	// Remove persisted metadata
+	m.store.Delete(id)
+
 	return nil
 }
 
