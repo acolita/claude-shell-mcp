@@ -1246,10 +1246,12 @@ func (s *Session) extractExitCode(output string) (int, bool) {
 		}
 		// Check new dynamic markers (___CMD_END_xxx___N)
 		if strings.HasPrefix(line, endMarkerPrefix) {
-			// Find the marker suffix and extract exit code after it
-			suffixIdx := strings.Index(line, markerSuffix)
+			// Find the marker suffix AFTER the prefix (not at the beginning of line)
+			// Line format: ___CMD_END_abc123___0
+			afterPrefix := line[len(endMarkerPrefix):]
+			suffixIdx := strings.Index(afterPrefix, markerSuffix)
 			if suffixIdx != -1 {
-				rest := line[suffixIdx+len(markerSuffix):]
+				rest := afterPrefix[suffixIdx+len(markerSuffix):]
 				var exitCode int
 				if _, err := fmt.Sscanf(rest, "%d", &exitCode); err == nil {
 					return exitCode, true
