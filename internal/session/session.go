@@ -742,33 +742,36 @@ func (s *Session) readOutputWithMarkers(ctx context.Context, command string, cmd
 				// After stall threshold, check if there's meaningful output
 				if stallCount >= stallThreshold {
 					asyncOutput, stdout := s.parseMarkedOutput(output, startMarker, endMarker, command)
-					// Only trigger awaiting_input if there's actual output
-					if len(strings.TrimSpace(stdout)) > 0 || len(strings.TrimSpace(asyncOutput)) > 0 {
+
+					// Check for interactive prompt patterns first (password, confirmation, etc.)
+					strippedOutput := stripANSI(output)
+					if detection := s.promptDetector.Detect(strippedOutput); detection != nil {
+						s.State = StateAwaitingInput
+						s.pendingPrompt = detection
+						return &ExecResult{
+							Status:        "awaiting_input",
+							Stdout:        stdout,
+							AsyncOutput:   asyncOutput,
+							CommandID:     cmdID,
+							PromptType:    string(detection.Pattern.Type),
+							PromptText:    detection.MatchedText,
+							ContextBuffer: detection.ContextBuffer,
+							MaskInput:     detection.Pattern.MaskInput,
+							Hint:          detection.Hint(),
+						}, nil
+					}
+
+					// Only trigger generic "awaiting_input" if there's actual command output (stdout)
+					// Don't trigger just because async_output has the command echo - that's normal
+					// Commands like tar run silently and produce no output until completion
+					if len(strings.TrimSpace(stdout)) > 0 {
 						// Check if this looks like a shell continuation prompt (PS2)
 						if isContinuationPrompt(output) && strings.Contains(command, "\n") {
 							stallCount = stallThreshold / 2
 							continue
 						}
 
-						// Check for interactive prompt patterns
-						strippedOutput := stripANSI(output)
-						if detection := s.promptDetector.Detect(strippedOutput); detection != nil {
-							s.State = StateAwaitingInput
-							s.pendingPrompt = detection
-							return &ExecResult{
-								Status:        "awaiting_input",
-								Stdout:        stdout,
-								AsyncOutput:   asyncOutput,
-								CommandID:     cmdID,
-								PromptType:    string(detection.Pattern.Type),
-								PromptText:    detection.MatchedText,
-								ContextBuffer: detection.ContextBuffer,
-								MaskInput:     detection.Pattern.MaskInput,
-								Hint:          detection.Hint(),
-							}, nil
-						}
-
-						// If output exists but no pattern matched, treat as stalled interactive
+						// If stdout exists but no prompt pattern matched, treat as stalled interactive
 						s.State = StateAwaitingInput
 						return &ExecResult{
 							Status:        "awaiting_input",
@@ -781,6 +784,10 @@ func (s *Session) readOutputWithMarkers(ctx context.Context, command string, cmd
 							Hint:          "Command appears to be waiting for input. Send input or interrupt with shell_interrupt.",
 						}, nil
 					}
+
+					// No stdout yet - command is probably still running silently (like tar, cp, etc.)
+					// Reset stall counter and keep waiting
+					stallCount = 0
 				}
 
 				continue
