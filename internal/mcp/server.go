@@ -26,7 +26,7 @@ type Server struct {
 func NewServer(cfg *config.Config) *Server {
 	mcpServer := server.NewMCPServer(
 		"claude-shell-mcp",
-		"1.4.2",
+		"1.4.3",
 		server.WithToolCapabilities(false),
 		server.WithLogging(),
 	)
