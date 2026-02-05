@@ -4,7 +4,6 @@ package session
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -15,7 +14,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realclock"
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realrand"
 	"github.com/acolita/claude-shell-mcp/internal/config"
+	"github.com/acolita/claude-shell-mcp/internal/ports"
 	"github.com/acolita/claude-shell-mcp/internal/prompt"
 	localpty "github.com/acolita/claude-shell-mcp/internal/pty"
 	"github.com/acolita/claude-shell-mcp/internal/sftp"
@@ -75,6 +77,8 @@ type Session struct {
 	pty            PTY // Common interface for local and SSH PTY
 	sshClient      *ssh.Client
 	promptDetector *prompt.Detector
+	clock          ports.Clock
+	random         ports.Random
 
 	// Pending prompt info when awaiting input
 	pendingPrompt *prompt.Detection
@@ -88,6 +92,14 @@ type Session struct {
 func (s *Session) Initialize() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Set default clock and random if not injected
+	if s.clock == nil {
+		s.clock = realclock.New()
+	}
+	if s.random == nil {
+		s.random = realrand.New()
+	}
 
 	// Create prompt detector
 	s.promptDetector = prompt.NewDetector()
@@ -128,8 +140,8 @@ func (s *Session) initializeLocal() error {
 	s.pty = &localPTYAdapter{pty: localPTY}
 	s.Shell = localPTY.Shell()
 	s.State = StateIdle
-	s.CreatedAt = time.Now()
-	s.LastUsed = time.Now()
+	s.CreatedAt = s.clock.Now()
+	s.LastUsed = s.clock.Now()
 
 	// Get PTY name for control plane (e.g., "3" from "/dev/pts/3")
 	if f := localPTY.File(); f != nil {
@@ -146,17 +158,17 @@ func (s *Session) initializeLocal() error {
 	}
 
 	// Wait for shell to be ready
-	time.Sleep(200 * time.Millisecond)
+	s.clock.Sleep(200 * time.Millisecond)
 
 	// Drain initial output (shell prompt, etc.)
 	buf := make([]byte, 8192)
-	s.pty.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	s.pty.SetReadDeadline(s.clock.Now().Add(300 * time.Millisecond))
 	s.pty.Read(buf) // Ignore output
 
 	// Set simple prompt based on shell type
 	s.pty.WriteString(s.shellPromptCommand())
-	time.Sleep(100 * time.Millisecond)
-	s.pty.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	s.clock.Sleep(100 * time.Millisecond)
+	s.pty.SetReadDeadline(s.clock.Now().Add(200 * time.Millisecond))
 	s.pty.Read(buf) // Drain the output
 
 	return nil
@@ -295,15 +307,15 @@ func (s *Session) setupSSHPTY(client *ssh.Client) error {
 	s.pty = &sshPTYAdapter{pty: sshPTY}
 	s.Shell = "/bin/bash"
 	s.State = StateIdle
-	s.CreatedAt = time.Now()
-	s.LastUsed = time.Now()
+	s.CreatedAt = s.clock.Now()
+	s.LastUsed = s.clock.Now()
 	s.Cwd = "~"
 	return nil
 }
 
 // initializeSSHShell initializes the shell environment.
 func (s *Session) initializeSSHShell() {
-	time.Sleep(500 * time.Millisecond)
+	s.clock.Sleep(500 * time.Millisecond)
 	buf := make([]byte, 8192)
 	s.readWithTimeout(buf, 500*time.Millisecond)
 
@@ -311,7 +323,7 @@ func (s *Session) initializeSSHShell() {
 	s.captureEnvAndPTY()
 
 	s.pty.WriteString(s.shellPromptCommand())
-	time.Sleep(200 * time.Millisecond)
+	s.clock.Sleep(200 * time.Millisecond)
 	s.readWithTimeout(buf, 300*time.Millisecond)
 }
 
@@ -337,7 +349,7 @@ func extractPTYNumber(sshTTY string) string {
 // captureEnvAndPTY captures environment variables and extracts PTY name from SSH_TTY.
 func (s *Session) captureEnvAndPTY() {
 	s.pty.WriteString("env\n")
-	time.Sleep(100 * time.Millisecond)
+	s.clock.Sleep(100 * time.Millisecond)
 
 	buf := make([]byte, 32768)
 	n, _ := s.readWithTimeout(buf, 500*time.Millisecond)
@@ -366,7 +378,7 @@ func (s *Session) captureEnvAndPTY() {
 // detectRemoteShell attempts to detect the remote shell from $SHELL.
 func (s *Session) detectRemoteShell() {
 	s.pty.WriteString("echo $SHELL\n")
-	time.Sleep(100 * time.Millisecond)
+	s.clock.Sleep(100 * time.Millisecond)
 
 	buf := make([]byte, 1024)
 	n, _ := s.readWithTimeout(buf, 200*time.Millisecond)
@@ -386,10 +398,10 @@ func (s *Session) detectRemoteShell() {
 // readWithTimeout reads from PTY with a timeout, draining all available data.
 func (s *Session) readWithTimeout(buf []byte, timeout time.Duration) (int, error) {
 	totalRead := 0
-	deadline := time.Now().Add(timeout)
+	deadline := s.clock.Now().Add(timeout)
 
-	for time.Now().Before(deadline) {
-		s.pty.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	for s.clock.Now().Before(deadline) {
+		s.pty.SetReadDeadline(s.clock.Now().Add(50 * time.Millisecond))
 		n, err := s.pty.Read(buf[totalRead:])
 		if n > 0 {
 			totalRead += n
@@ -430,7 +442,7 @@ func (s *Session) reconnectSSH() error {
 		if err := s.initializeSSH(); err != nil {
 			lastErr = err
 			if i < len(delays)-1 {
-				time.Sleep(delay)
+				s.clock.Sleep(delay)
 			}
 			continue
 		}
@@ -454,7 +466,7 @@ func (s *Session) restoreState(cwd string, envVars map[string]string) {
 	// Restore working directory
 	if cwd != "" && cwd != "~" {
 		s.pty.WriteString(fmt.Sprintf("cd %q 2>/dev/null\n", cwd))
-		time.Sleep(100 * time.Millisecond)
+		s.clock.Sleep(100 * time.Millisecond)
 		s.readWithTimeout(buf, 200*time.Millisecond)
 		s.Cwd = cwd
 	}
@@ -469,7 +481,7 @@ func (s *Session) restoreState(cwd string, envVars map[string]string) {
 		}
 		// Export the variable
 		s.pty.WriteString(fmt.Sprintf("export %s=%q\n", key, value))
-		time.Sleep(50 * time.Millisecond)
+		s.clock.Sleep(50 * time.Millisecond)
 	}
 
 	// Drain any output from the restore commands
@@ -501,8 +513,8 @@ func (s *Session) Status() SessionStatus {
 		Shell:         s.Shell,
 		ShellInfo:     &shellInfo,
 		Cwd:           s.Cwd,
-		IdleSeconds:   int(time.Since(s.LastUsed).Seconds()),
-		UptimeSeconds: int(time.Since(s.CreatedAt).Seconds()),
+		IdleSeconds:   int(s.clock.Now().Sub(s.LastUsed).Seconds()),
+		UptimeSeconds: int(s.clock.Now().Sub(s.CreatedAt).Seconds()),
 		EnvVars:       s.EnvVars,
 		Aliases:       s.Aliases,
 		Connected:     s.pty != nil && s.State != StateClosed,
@@ -569,17 +581,17 @@ func (s *Session) Exec(command string, timeoutMs int) (*ExecResult, error) {
 	}
 
 	s.State = StateRunning
-	s.LastUsed = time.Now()
+	s.LastUsed = s.clock.Now()
 	s.outputBuffer.Reset()
 
-	cmdID := generateCommandID()
+	cmdID := s.generateCommandID()
 	fullCommand := s.buildWrappedCommand(command, cmdID)
 
 	if err := s.writeCommandWithReconnect(fullCommand); err != nil {
 		return nil, err
 	}
 
-	applyMultilineDelay(command)
+	s.applyMultilineDelay(command)
 
 	timeout := s.getTimeout(timeoutMs)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -684,7 +696,7 @@ func (s *Session) writeCommandWithReconnect(fullCommand string) error {
 }
 
 // applyMultilineDelay adds delay for multi-line commands.
-func applyMultilineDelay(command string) {
+func (s *Session) applyMultilineDelay(command string) {
 	if !strings.Contains(command, "\n") {
 		return
 	}
@@ -693,7 +705,7 @@ func applyMultilineDelay(command string) {
 	if delay > 500*time.Millisecond {
 		delay = 500 * time.Millisecond
 	}
-	time.Sleep(delay)
+	s.clock.Sleep(delay)
 }
 
 // getTimeout returns the command timeout duration.
@@ -712,7 +724,7 @@ func (s *Session) processLegacyRead(ctx context.Context, buf []byte, command str
 		return result, stallCount, nil
 	}
 
-	s.pty.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	s.pty.SetReadDeadline(s.clock.Now().Add(100 * time.Millisecond))
 
 	n, err := s.pty.Read(buf)
 	if err != nil {
@@ -881,7 +893,7 @@ func (s *Session) processMarkedRead(ctx context.Context, buf []byte, execCtx *ex
 		return result, stallCount, nil
 	}
 
-	s.pty.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	s.pty.SetReadDeadline(s.clock.Now().Add(100 * time.Millisecond))
 
 	n, err := s.pty.Read(buf)
 	if err != nil {
@@ -1146,7 +1158,7 @@ func (s *Session) drainOutput() {
 	buf := make([]byte, 4096)
 	// Read with short deadline until we get no more data
 	for i := 0; i < 10; i++ { // Max 10 attempts (1 second total)
-		s.pty.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		s.pty.SetReadDeadline(s.clock.Now().Add(100 * time.Millisecond))
 		n, err := s.pty.Read(buf)
 		if err != nil || n == 0 {
 			break
@@ -1155,11 +1167,11 @@ func (s *Session) drainOutput() {
 }
 
 // generateCommandID generates a unique 8-character hex ID for command markers.
-func generateCommandID() string {
+func (s *Session) generateCommandID() string {
 	b := make([]byte, 4)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := s.random.Read(b); err != nil {
 		// Fallback to timestamp-based ID if crypto/rand fails
-		return fmt.Sprintf("%08x", time.Now().UnixNano()&0xFFFFFFFF)
+		return fmt.Sprintf("%08x", s.clock.Now().UnixNano()&0xFFFFFFFF)
 	}
 	return hex.EncodeToString(b)
 }
@@ -1175,12 +1187,12 @@ func (s *Session) forceKillCommand() {
 		// Kill all processes on the PTY
 		if err := s.controlSession.KillPTY(ctx, s.PTYName); err == nil {
 			// Give processes time to die
-			time.Sleep(100 * time.Millisecond)
+			s.clock.Sleep(100 * time.Millisecond)
 			s.drainOutput()
 
 			// Send newline to get fresh prompt
 			s.pty.WriteString("\n")
-			time.Sleep(100 * time.Millisecond)
+			s.clock.Sleep(100 * time.Millisecond)
 			s.drainOutput()
 			return
 		}
@@ -1199,25 +1211,25 @@ func (s *Session) forceKillCommandFallback() {
 	// Send Ctrl+C multiple times with delays
 	for i := 0; i < 3; i++ {
 		s.pty.Interrupt()
-		time.Sleep(50 * time.Millisecond)
+		s.clock.Sleep(50 * time.Millisecond)
 	}
-	time.Sleep(100 * time.Millisecond)
+	s.clock.Sleep(100 * time.Millisecond)
 
 	// Drain output after interrupts
 	s.drainOutput()
 
 	// Check if still producing output
-	s.pty.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+	s.pty.SetReadDeadline(s.clock.Now().Add(150 * time.Millisecond))
 	n, _ := s.pty.Read(buf)
 
 	if n > 0 {
 		// Send 'q' for apps like top, less that use q to quit
 		s.pty.WriteString("q")
-		time.Sleep(100 * time.Millisecond)
+		s.clock.Sleep(100 * time.Millisecond)
 		s.drainOutput()
 
 		// Check again
-		s.pty.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+		s.pty.SetReadDeadline(s.clock.Now().Add(150 * time.Millisecond))
 		n, _ = s.pty.Read(buf)
 	}
 
@@ -1225,14 +1237,14 @@ func (s *Session) forceKillCommandFallback() {
 		// Final attempt: more Ctrl+C
 		for i := 0; i < 3; i++ {
 			s.pty.Interrupt()
-			time.Sleep(30 * time.Millisecond)
+			s.clock.Sleep(30 * time.Millisecond)
 		}
 		s.drainOutput()
 	}
 
 	// Send newline to get fresh prompt
 	s.pty.WriteString("\n")
-	time.Sleep(100 * time.Millisecond)
+	s.clock.Sleep(100 * time.Millisecond)
 	s.drainOutput()
 }
 
@@ -1272,7 +1284,7 @@ func (s *Session) ProvideInput(input string) (*ExecResult, error) {
 	}
 
 	s.State = StateRunning
-	s.LastUsed = time.Now()
+	s.LastUsed = s.clock.Now()
 
 	s.prepareForPasswordInput()
 
@@ -1364,7 +1376,7 @@ func (s *Session) SendRaw(input string) (*ExecResult, error) {
 	}
 
 	s.State = StateRunning
-	s.LastUsed = time.Now()
+	s.LastUsed = s.clock.Now()
 
 	// Interpret escape sequences in the input
 	rawBytes := interpretEscapeSequences(input)
@@ -1527,7 +1539,7 @@ func parseOctalByte(s string) (byte, bool) {
 // See: https://pexpect.readthedocs.io/en/stable/commonissues.html
 func (s *Session) waitForEchoDisabled() {
 	// Pexpect uses 50ms delay by default, we use 100ms to be safe
-	time.Sleep(100 * time.Millisecond)
+	s.clock.Sleep(100 * time.Millisecond)
 }
 
 // Interrupt sends an interrupt signal to the session.
@@ -1672,10 +1684,10 @@ func (s *Session) cleanOutput(output, command string) string {
 // updateCwd updates the current working directory.
 func (s *Session) updateCwd() {
 	s.pty.WriteString("pwd\n")
-	time.Sleep(50 * time.Millisecond)
+	s.clock.Sleep(50 * time.Millisecond)
 
 	buf := make([]byte, 1024)
-	s.pty.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	s.pty.SetReadDeadline(s.clock.Now().Add(100 * time.Millisecond))
 	n, _ := s.pty.Read(buf)
 
 	if n > 0 {
@@ -1702,11 +1714,11 @@ func (s *Session) CaptureEnv() map[string]string {
 
 	// Send env command
 	s.pty.WriteString("env\n")
-	time.Sleep(100 * time.Millisecond)
+	s.clock.Sleep(100 * time.Millisecond)
 
 	// Read output
 	buf := make([]byte, 32768) // Env can be large
-	s.pty.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	s.pty.SetReadDeadline(s.clock.Now().Add(500 * time.Millisecond))
 	n, _ := s.pty.Read(buf)
 
 	if n == 0 {
@@ -1762,11 +1774,11 @@ func (s *Session) CaptureAliases() map[string]string {
 
 	// Send alias command
 	s.pty.WriteString("alias\n")
-	time.Sleep(100 * time.Millisecond)
+	s.clock.Sleep(100 * time.Millisecond)
 
 	// Read output
 	buf := make([]byte, 16384)
-	s.pty.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	s.pty.SetReadDeadline(s.clock.Now().Add(500 * time.Millisecond))
 	n, _ := s.pty.Read(buf)
 
 	if n == 0 {

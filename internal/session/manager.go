@@ -2,13 +2,15 @@
 package session
 
 import (
-	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realclock"
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realrand"
 	"github.com/acolita/claude-shell-mcp/internal/config"
+	"github.com/acolita/claude-shell-mcp/internal/ports"
 )
 
 // Manager manages shell sessions.
@@ -18,16 +20,54 @@ type Manager struct {
 	store           *SessionStore              // persists session metadata for recovery
 	mu              sync.RWMutex
 	config          *config.Config
+	clock           ports.Clock
+	random          ports.Random
+}
+
+// ManagerOption configures a Manager.
+type ManagerOption func(*Manager)
+
+// WithManagerClock sets the clock used by Manager.
+func WithManagerClock(clock ports.Clock) ManagerOption {
+	return func(m *Manager) {
+		m.clock = clock
+	}
+}
+
+// WithManagerRandom sets the random source used by Manager.
+func WithManagerRandom(random ports.Random) ManagerOption {
+	return func(m *Manager) {
+		m.random = random
+	}
+}
+
+// WithManagerStore sets the session store used by Manager.
+func WithManagerStore(store *SessionStore) ManagerOption {
+	return func(m *Manager) {
+		m.store = store
+	}
 }
 
 // NewManager creates a new session manager.
-func NewManager(cfg *config.Config) *Manager {
-	return &Manager{
+func NewManager(cfg *config.Config, opts ...ManagerOption) *Manager {
+	m := &Manager{
 		sessions:        make(map[string]*Session),
 		controlSessions: make(map[string]*ControlSession),
-		store:           NewSessionStore(),
 		config:          cfg,
+		clock:           realclock.New(),
+		random:          realrand.New(),
 	}
+
+	for _, opt := range opts {
+		opt(m)
+	}
+
+	// Create store after options are applied (so we can inject a fake store)
+	if m.store == nil {
+		m.store = NewSessionStore()
+	}
+
+	return m
 }
 
 // Create creates a new session and returns its ID.
@@ -40,7 +80,7 @@ func (m *Manager) Create(opts CreateOptions) (*Session, error) {
 		return nil, fmt.Errorf("max sessions reached (%d)", m.config.Security.MaxSessionsPerUser)
 	}
 
-	id := generateSessionID()
+	id := m.generateSessionID()
 	sess := &Session{
 		ID:       id,
 		State:    StateIdle,
@@ -51,6 +91,8 @@ func (m *Manager) Create(opts CreateOptions) (*Session, error) {
 		Password: opts.Password,
 		KeyPath:  opts.KeyPath,
 		config:   m.config,
+		clock:    m.clock,
+		random:   m.random,
 	}
 
 	// Initialize the session (creates PTY/SSH connection)
@@ -118,6 +160,8 @@ func (m *Manager) recover(id string) (*Session, error) {
 		Cwd:          meta.Cwd,
 		SavedTunnels: meta.Tunnels, // Saved tunnels for user to restore
 		config:       m.config,
+		clock:        m.clock,
+		random:       m.random,
 	}
 
 	// Initialize the session (creates PTY/SSH connection)
@@ -202,7 +246,7 @@ func (m *Manager) ListDetailed() []SessionInfo {
 	defer m.mu.RUnlock()
 
 	infos := make([]SessionInfo, 0, len(m.sessions))
-	now := time.Now()
+	now := m.clock.Now()
 
 	for _, sess := range m.sessions {
 		info := SessionInfo{
@@ -229,9 +273,9 @@ func (m *Manager) SessionCount() int {
 }
 
 // generateSessionID generates a unique session ID.
-func generateSessionID() string {
+func (m *Manager) generateSessionID() string {
 	b := make([]byte, 8)
-	rand.Read(b)
+	m.random.Read(b)
 	return "sess_" + hex.EncodeToString(b)
 }
 
