@@ -28,8 +28,8 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-SONAR_URL="${1:-http://sonarqube.s1.acolita.local}"
-SONAR_TOKEN="squ_0aa9f2b907a0c3c33bf243e7d5af4749437072e6"
+SONAR_URL="${1:-${SONAR_URL:-http://sonarqube.s1.acolita.local}}"
+SONAR_TOKEN="${SONAR_TOKEN:?Set SONAR_TOKEN environment variable}"
 PROJECT_KEY="claude-shell-mcp"
 OUTPUT_FILE="sonar-todo.md"
 

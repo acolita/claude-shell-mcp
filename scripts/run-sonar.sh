@@ -9,8 +9,8 @@
 
 set -e
 
-SONAR_URL="http://sonarqube.s1.acolita.local"
-SONAR_TOKEN="squ_0aa9f2b907a0c3c33bf243e7d5af4749437072e6"
+SONAR_URL="${SONAR_URL:-http://sonarqube.s1.acolita.local}"
+SONAR_TOKEN="${SONAR_TOKEN:?Set SONAR_TOKEN environment variable}"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Colors
