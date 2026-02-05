@@ -8,8 +8,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -293,7 +295,7 @@ func (s *Server) handleSSHFileGet(sess *session.Session, remotePath string, opts
 	}
 
 	if opts.LocalPath != "" {
-		if errResult := copyToLocalPath(data, opts.LocalPath, info, opts.Preserve); errResult != nil {
+		if errResult := s.copyToLocalPath(data, opts.LocalPath, info, opts.Preserve); errResult != nil {
 			return errResult, nil
 		}
 		result.LocalPath = opts.LocalPath
@@ -305,7 +307,7 @@ func (s *Server) handleSSHFileGet(sess *session.Session, remotePath string, opts
 }
 
 func (s *Server) handleLocalFileGet(path string, opts FileGetOptions) (*mcp.CallToolResult, error) {
-	info, err := os.Stat(path)
+	info, err := s.fs.Stat(path)
 	if err != nil {
 		return fileStatError(path, err), nil
 	}
@@ -317,7 +319,7 @@ func (s *Server) handleLocalFileGet(path string, opts FileGetOptions) (*mcp.Call
 		return mcp.NewToolResultError(fmt.Sprintf("file size (%d bytes) exceeds limit (%d bytes), please specify local_path", info.Size(), maxContentSize)), nil
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := s.fs.ReadFile(path)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("read file: %v", err)), nil
 	}
@@ -335,7 +337,7 @@ func (s *Server) handleLocalFileGet(path string, opts FileGetOptions) (*mcp.Call
 	}
 
 	if opts.LocalPath != "" && opts.LocalPath != path {
-		if errResult := copyToLocalPath(data, opts.LocalPath, info, opts.Preserve); errResult != nil {
+		if errResult := s.copyToLocalPath(data, opts.LocalPath, info, opts.Preserve); errResult != nil {
 			return errResult, nil
 		}
 		result.LocalPath = opts.LocalPath
@@ -348,7 +350,7 @@ func (s *Server) handleLocalFileGet(path string, opts FileGetOptions) (*mcp.Call
 
 // fileStatError returns appropriate error for file stat failures.
 func fileStatError(path string, err error) *mcp.CallToolResult {
-	if os.IsNotExist(err) {
+	if errors.Is(err, fs.ErrNotExist) {
 		return mcp.NewToolResultError(fmt.Sprintf("file not found: %s", path))
 	}
 	return mcp.NewToolResultError(fmt.Sprintf("stat file: %v", err))
@@ -373,15 +375,15 @@ func processFileChecksum(data []byte, opts FileGetOptions, result *FileGetResult
 }
 
 // copyToLocalPath copies file data to a local path with optional timestamp preservation.
-func copyToLocalPath(data []byte, localPath string, info os.FileInfo, preserve bool) *mcp.CallToolResult {
-	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+func (s *Server) copyToLocalPath(data []byte, localPath string, info os.FileInfo, preserve bool) *mcp.CallToolResult {
+	if err := s.fs.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("create directory: %v", err))
 	}
-	if err := os.WriteFile(localPath, data, info.Mode().Perm()); err != nil {
+	if err := s.fs.WriteFile(localPath, data, info.Mode().Perm()); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("write file: %v", err))
 	}
 	if preserve {
-		if err := os.Chtimes(localPath, info.ModTime(), info.ModTime()); err != nil {
+		if err := s.fs.Chtimes(localPath, info.ModTime(), info.ModTime()); err != nil {
 			slog.Warn(errPreserveTimestamp, slog.String("error", err.Error()))
 		}
 	}
@@ -452,13 +454,13 @@ func validateFilePutInputs(sessionID, remotePath string, opts FilePutOptions) *m
 }
 
 // resolveFileContent reads content from local file or decodes provided content.
-func resolveFileContent(opts FilePutOptions) ([]byte, time.Time, *mcp.CallToolResult) {
+func (s *Server) resolveFileContent(opts FilePutOptions) ([]byte, time.Time, *mcp.CallToolResult) {
 	if opts.LocalPath != "" {
-		info, err := os.Stat(opts.LocalPath)
+		info, err := s.fs.Stat(opts.LocalPath)
 		if err != nil {
 			return nil, time.Time{}, mcp.NewToolResultError(fmt.Sprintf("stat local file: %v", err))
 		}
-		data, err := os.ReadFile(opts.LocalPath)
+		data, err := s.fs.ReadFile(opts.LocalPath)
 		if err != nil {
 			return nil, time.Time{}, mcp.NewToolResultError(fmt.Sprintf("read local file: %v", err))
 		}
@@ -508,7 +510,7 @@ func (s *Server) handleShellFilePut(ctx context.Context, req mcp.CallToolRequest
 	resolvedPath := sess.ResolvePath(remotePath)
 	slog.Info("uploading file", slog.String("session_id", sessionID), slog.String("remote_path", resolvedPath), slog.Bool("atomic", opts.Atomic))
 
-	data, sourceModTime, errResult := resolveFileContent(opts)
+	data, sourceModTime, errResult := s.resolveFileContent(opts)
 	if errResult != nil {
 		return errResult, nil
 	}
@@ -666,29 +668,29 @@ func (s *Server) handleLocalFilePut(path string, data []byte, opts FilePutOption
 	result := newFilePutResult(path, data, opts.Mode)
 	setPutChecksum(data, opts.Checksum, &result)
 
-	if errResult := checkLocalFileOverwrite(path, opts.Overwrite, &result); errResult != nil {
+	if errResult := s.checkLocalFileOverwrite(path, opts.Overwrite, &result); errResult != nil {
 		return errResult, nil
 	}
 
 	dir := filepath.Dir(path)
 	if opts.CreateDirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := s.fs.MkdirAll(dir, 0755); err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf(errCreateDirs, err)), nil
 		}
 		result.DirsCreated = true
 	}
 
-	if errResult := writeLocalFile(path, dir, data, opts, &result); errResult != nil {
+	if errResult := s.writeLocalFile(path, dir, data, opts, &result); errResult != nil {
 		return errResult, nil
 	}
 
-	preserveLocalTimestamp(path, opts.Preserve, sourceModTime)
+	s.preserveLocalTimestamp(path, opts.Preserve, sourceModTime)
 	return jsonResult(result)
 }
 
 // checkLocalFileOverwrite checks if local file exists and handles overwrite logic.
-func checkLocalFileOverwrite(path string, overwrite bool, result *FilePutResult) *mcp.CallToolResult {
-	_, err := os.Stat(path)
+func (s *Server) checkLocalFileOverwrite(path string, overwrite bool, result *FilePutResult) *mcp.CallToolResult {
+	_, err := s.fs.Stat(path)
 	fileExists := err == nil
 	if fileExists && !overwrite {
 		return mcp.NewToolResultError(fmt.Sprintf("file exists: %s (use overwrite=true to replace)", path))
@@ -700,21 +702,21 @@ func checkLocalFileOverwrite(path string, overwrite bool, result *FilePutResult)
 }
 
 // writeLocalFile writes data to local file with optional atomic write.
-func writeLocalFile(path, dir string, data []byte, opts FilePutOptions, result *FilePutResult) *mcp.CallToolResult {
+func (s *Server) writeLocalFile(path, dir string, data []byte, opts FilePutOptions, result *FilePutResult) *mcp.CallToolResult {
 	if !opts.Atomic {
-		if err := os.WriteFile(path, data, opts.Mode); err != nil {
+		if err := s.fs.WriteFile(path, data, opts.Mode); err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("write file: %v", err))
 		}
 		return nil
 	}
 
 	tempPath := filepath.Join(dir, fmt.Sprintf(".%s.tmp.%s", filepath.Base(path), randomSuffix()))
-	if err := os.WriteFile(tempPath, data, opts.Mode); err != nil {
+	if err := s.fs.WriteFile(tempPath, data, opts.Mode); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("write temp file: %v", err))
 	}
 
-	if err := os.Rename(tempPath, path); err != nil {
-		os.Remove(tempPath)
+	if err := s.fs.Rename(tempPath, path); err != nil {
+		s.fs.Remove(tempPath)
 		return mcp.NewToolResultError(fmt.Sprintf("rename to final path: %v", err))
 	}
 	result.AtomicWrite = true
@@ -722,9 +724,9 @@ func writeLocalFile(path, dir string, data []byte, opts FilePutOptions, result *
 }
 
 // preserveLocalTimestamp sets file timestamps if preserve is requested.
-func preserveLocalTimestamp(path string, preserve bool, modTime time.Time) {
+func (s *Server) preserveLocalTimestamp(path string, preserve bool, modTime time.Time) {
 	if preserve && !modTime.IsZero() {
-		if err := os.Chtimes(path, modTime, modTime); err != nil {
+		if err := s.fs.Chtimes(path, modTime, modTime); err != nil {
 			slog.Warn(errPreserveTimestamp, slog.String("error", err.Error()))
 		}
 	}
@@ -830,9 +832,9 @@ func (s *Server) handleSSHFileMv(sess *session.Session, source, destination stri
 
 func (s *Server) handleLocalFileMv(source, destination string, opts FileMvOptions) (*mcp.CallToolResult, error) {
 	// Check source file exists and get metadata
-	srcInfo, err := os.Stat(source)
+	srcInfo, err := s.fs.Stat(source)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return mcp.NewToolResultError(fmt.Sprintf("source file not found: %s", source)), nil
 		}
 		return mcp.NewToolResultError(fmt.Sprintf("stat source: %v", err)), nil
@@ -851,7 +853,7 @@ func (s *Server) handleLocalFileMv(source, destination string, opts FileMvOption
 	}
 
 	// Check if destination exists
-	_, err = os.Stat(destination)
+	_, err = s.fs.Stat(destination)
 	destExists := err == nil
 	if destExists && !opts.Overwrite {
 		return mcp.NewToolResultError(fmt.Sprintf("destination exists: %s (use overwrite=true to replace)", destination)), nil
@@ -863,14 +865,14 @@ func (s *Server) handleLocalFileMv(source, destination string, opts FileMvOption
 	// Create parent directories if requested
 	destDir := filepath.Dir(destination)
 	if opts.CreateDirs {
-		if err := os.MkdirAll(destDir, 0755); err != nil {
+		if err := s.fs.MkdirAll(destDir, 0755); err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf(errCreateDirs, err)), nil
 		}
 		result.DirsCreated = true
 	}
 
 	// Perform the rename/move
-	if err := os.Rename(source, destination); err != nil {
+	if err := s.fs.Rename(source, destination); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("move file: %v", err)), nil
 	}
 

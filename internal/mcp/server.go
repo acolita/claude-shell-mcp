@@ -4,7 +4,9 @@ package mcp
 import (
 	"log/slog"
 
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realfs"
 	"github.com/acolita/claude-shell-mcp/internal/config"
+	"github.com/acolita/claude-shell-mcp/internal/ports"
 	"github.com/acolita/claude-shell-mcp/internal/recording"
 	"github.com/acolita/claude-shell-mcp/internal/security"
 	"github.com/acolita/claude-shell-mcp/internal/session"
@@ -20,10 +22,21 @@ type Server struct {
 	authRateLimiter  *security.AuthRateLimiter
 	recordingManager *recording.Manager
 	config           *config.Config
+	fs               ports.FileSystem
+}
+
+// ServerOption configures a Server.
+type ServerOption func(*Server)
+
+// WithFileSystem sets the filesystem used by Server.
+func WithFileSystem(fs ports.FileSystem) ServerOption {
+	return func(s *Server) {
+		s.fs = fs
+	}
 }
 
 // NewServer creates a new MCP server with the given configuration.
-func NewServer(cfg *config.Config) *Server {
+func NewServer(cfg *config.Config, opts ...ServerOption) *Server {
 	mcpServer := server.NewMCPServer(
 		"claude-shell-mcp",
 		"1.5.1",
@@ -73,6 +86,12 @@ func NewServer(cfg *config.Config) *Server {
 		authRateLimiter:  security.NewAuthRateLimiter(maxAuthFailures, authLockoutDuration),
 		recordingManager: recording.NewManager(recordingPath, cfg.Recording.Enabled),
 		config:           cfg,
+		fs:               realfs.New(), // default to real filesystem
+	}
+
+	// Apply options
+	for _, opt := range opts {
+		opt(s)
 	}
 
 	s.registerTools()

@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/acolita/claude-shell-mcp/internal/config"
+	"github.com/acolita/claude-shell-mcp/internal/testing/fakes/fakefs"
 )
 
 func TestRandomSuffix(t *testing.T) {
@@ -412,5 +415,217 @@ func TestSymlinkAction(t *testing.T) {
 			t.Errorf("duplicate symlinkAction value")
 		}
 		seen[action] = true
+	}
+}
+
+// Tests using fakefs for deterministic file operations
+
+func TestHandleLocalFileGet_WithFakeFS(t *testing.T) {
+	fs := fakefs.New()
+	fs.AddFile("/test/file.txt", []byte("hello world"), 0644)
+
+	cfg := config.DefaultConfig()
+	srv := NewServer(cfg, WithFileSystem(fs))
+
+	tests := []struct {
+		name       string
+		path       string
+		opts       FileGetOptions
+		wantStatus string
+		wantErr    string
+	}{
+		{
+			name:       "existing file",
+			path:       "/test/file.txt",
+			opts:       FileGetOptions{},
+			wantStatus: "completed",
+		},
+		{
+			name:    "missing file",
+			path:    "/nonexistent",
+			opts:    FileGetOptions{},
+			wantErr: "file not found",
+		},
+		{
+			name:    "directory not file",
+			path:    "/test",
+			opts:    FileGetOptions{},
+			wantErr: "is a directory",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := srv.handleLocalFileGet(tt.path, tt.opts)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if tt.wantErr != "" {
+				if !result.IsError {
+					t.Errorf("expected error containing %q, got success", tt.wantErr)
+				}
+				return
+			}
+
+			if result.IsError {
+				t.Errorf("unexpected error: %v", result.Content)
+			}
+		})
+	}
+}
+
+func TestHandleLocalFileMv_WithFakeFS(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(*fakefs.FS)
+		source     string
+		dest       string
+		opts       FileMvOptions
+		wantStatus string
+		wantErr    string
+	}{
+		{
+			name: "move file",
+			setup: func(fs *fakefs.FS) {
+				fs.AddFile("/src/file.txt", []byte("content"), 0644)
+			},
+			source:     "/src/file.txt",
+			dest:       "/dst/file.txt",
+			opts:       FileMvOptions{CreateDirs: true},
+			wantStatus: "completed",
+		},
+		{
+			name: "source not found",
+			setup: func(fs *fakefs.FS) {
+				// No file created
+			},
+			source:  "/missing.txt",
+			dest:    "/dst/file.txt",
+			opts:    FileMvOptions{},
+			wantErr: "source file not found",
+		},
+		{
+			name: "dest exists no overwrite",
+			setup: func(fs *fakefs.FS) {
+				fs.AddFile("/src/file.txt", []byte("source"), 0644)
+				fs.AddFile("/dst/file.txt", []byte("dest"), 0644)
+			},
+			source:  "/src/file.txt",
+			dest:    "/dst/file.txt",
+			opts:    FileMvOptions{Overwrite: false},
+			wantErr: "destination exists",
+		},
+		{
+			name: "dest exists with overwrite",
+			setup: func(fs *fakefs.FS) {
+				fs.AddFile("/src/file.txt", []byte("source"), 0644)
+				fs.AddFile("/dst/file.txt", []byte("dest"), 0644)
+			},
+			source:     "/src/file.txt",
+			dest:       "/dst/file.txt",
+			opts:       FileMvOptions{Overwrite: true},
+			wantStatus: "completed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fs := fakefs.New()
+			if tt.setup != nil {
+				tt.setup(fs)
+			}
+
+			cfg := config.DefaultConfig()
+			srv := NewServer(cfg, WithFileSystem(fs))
+
+			result, err := srv.handleLocalFileMv(tt.source, tt.dest, tt.opts)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if tt.wantErr != "" {
+				if !result.IsError {
+					t.Errorf("expected error containing %q, got success", tt.wantErr)
+				}
+				return
+			}
+
+			if result.IsError {
+				t.Errorf("unexpected error: %v", result.Content)
+			}
+		})
+	}
+}
+
+func TestWriteLocalFile_WithFakeFS(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func(*fakefs.FS)
+		path      string
+		dir       string
+		data      []byte
+		opts      FilePutOptions
+		wantErr   bool
+		checkFile bool
+	}{
+		{
+			name:      "write new file",
+			path:      "/new/file.txt",
+			dir:       "/new",
+			data:      []byte("test content"),
+			opts:      FilePutOptions{Mode: 0644},
+			checkFile: true,
+		},
+		{
+			name: "atomic write",
+			setup: func(fs *fakefs.FS) {
+				fs.AddFile("/atomic/dummy", []byte("x"), 0644) // ensure dir exists
+			},
+			path:      "/atomic/file.txt",
+			dir:       "/atomic",
+			data:      []byte("atomic content"),
+			opts:      FilePutOptions{Mode: 0644, Atomic: true},
+			checkFile: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fs := fakefs.New()
+			if tt.setup != nil {
+				tt.setup(fs)
+			}
+			// Ensure directory exists
+			_ = fs.MkdirAll(tt.dir, 0755)
+
+			cfg := config.DefaultConfig()
+			srv := NewServer(cfg, WithFileSystem(fs))
+
+			var result FilePutResult
+			errResult := srv.writeLocalFile(tt.path, tt.dir, tt.data, tt.opts, &result)
+
+			if tt.wantErr {
+				if errResult == nil || !errResult.IsError {
+					t.Errorf("expected error, got success")
+				}
+				return
+			}
+
+			if errResult != nil && errResult.IsError {
+				t.Errorf("unexpected error: %v", errResult.Content)
+				return
+			}
+
+			if tt.checkFile {
+				data, err := fs.ReadFile(tt.path)
+				if err != nil {
+					t.Errorf("failed to read written file: %v", err)
+				}
+				if string(data) != string(tt.data) {
+					t.Errorf("file content = %q, want %q", data, tt.data)
+				}
+			}
+		})
 	}
 }
