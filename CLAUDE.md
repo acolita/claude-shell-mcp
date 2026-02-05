@@ -146,6 +146,7 @@ claude-shell-mcp/
 |------|---------|
 | `shell_file_get` | Download a file from remote session (returns content or saves locally) |
 | `shell_file_put` | Upload a file to remote session (from content or local file) |
+| `shell_file_mv` | Move or rename a file in a session |
 | `shell_dir_get` | Download a directory recursively with glob pattern support |
 | `shell_dir_put` | Upload a directory recursively with glob pattern support |
 
@@ -156,6 +157,13 @@ claude-shell-mcp/
 | `shell_file_put_chunked` | Upload large files in chunks with resume support |
 | `shell_transfer_status` | Check progress of a chunked transfer |
 | `shell_transfer_resume` | Resume an interrupted chunked transfer |
+
+### SSH Tunnel Tools
+| Tool | Purpose |
+|------|---------|
+| `shell_tunnel_create` | Create an SSH tunnel (local -L or reverse -R port forward) |
+| `shell_tunnel_list` | List active tunnels for a session with connection stats |
+| `shell_tunnel_close` | Close a specific tunnel |
 
 #### File Transfer Features
 - **Checksum verification**: SHA256 checksum calculation and verification

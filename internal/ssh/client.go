@@ -25,6 +25,9 @@ type Client struct {
 
 	// SFTP client (lazy initialized)
 	sftpClient *sftp.Client
+
+	// Tunnel manager (lazy initialized)
+	tunnelManager *TunnelManager
 }
 
 // ClientOptions configures SSH client behavior.
@@ -162,7 +165,13 @@ func (c *Client) Close() error {
 		c.keepaliveStop = nil
 	}
 
-	// Close SFTP client first
+	// Close tunnels first
+	if c.tunnelManager != nil {
+		c.tunnelManager.CloseAll()
+		c.tunnelManager = nil
+	}
+
+	// Close SFTP client
 	if c.sftpClient != nil {
 		c.sftpClient.Close()
 		c.sftpClient = nil
@@ -232,4 +241,21 @@ func (c *Client) CloseSFTP() error {
 		return err
 	}
 	return nil
+}
+
+// TunnelManager returns the tunnel manager for this client.
+// The tunnel manager is lazily initialized.
+func (c *Client) TunnelManager() *TunnelManager {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.conn == nil {
+		return nil
+	}
+
+	if c.tunnelManager == nil {
+		c.tunnelManager = NewTunnelManager(c.conn)
+	}
+
+	return c.tunnelManager
 }

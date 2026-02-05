@@ -1,0 +1,3 @@
+[submodule "peak-tty"]
+	path = peak-tty
+	url = https://github.com/acolita/peak-tty.git

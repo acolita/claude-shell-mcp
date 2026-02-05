@@ -47,7 +47,7 @@ The manifest file (.transfer) tracks progress and enables resume.
 Use shell_transfer_status to check progress, shell_transfer_resume to continue.`),
 		mcp.WithString("session_id",
 			mcp.Required(),
-			mcp.Description("The session ID"),
+			mcp.Description(descSessionID),
 		),
 		mcp.WithString("remote_path",
 			mcp.Required(),
@@ -77,7 +77,7 @@ The manifest file (.transfer) tracks progress and enables resume.
 Use shell_transfer_status to check progress, shell_transfer_resume to continue.`),
 		mcp.WithString("session_id",
 			mcp.Required(),
-			mcp.Description("The session ID"),
+			mcp.Description(descSessionID),
 		),
 		mcp.WithString("local_path",
 			mcp.Required(),
@@ -117,7 +117,7 @@ Continues a transfer from where it left off using the manifest file.
 Verifies completed chunks and resumes from the first incomplete chunk.`),
 		mcp.WithString("session_id",
 			mcp.Required(),
-			mcp.Description("The session ID"),
+			mcp.Description(descSessionID),
 		),
 		mcp.WithString("manifest_path",
 			mcp.Required(),
@@ -175,7 +175,7 @@ func (s *Server) handleShellFileGetChunked(ctx context.Context, req mcp.CallTool
 	chunkSize := mcp.ParseInt(req, "chunk_size", DefaultChunkSize)
 
 	if sessionID == "" {
-		return mcp.NewToolResultError("session_id is required"), nil
+		return mcp.NewToolResultError(errSessionIDRequired), nil
 	}
 	if remotePath == "" {
 		return mcp.NewToolResultError("remote_path is required"), nil
@@ -220,7 +220,7 @@ func (s *Server) handleShellFilePutChunked(ctx context.Context, req mcp.CallTool
 	chunkSize := mcp.ParseInt(req, "chunk_size", DefaultChunkSize)
 
 	if sessionID == "" {
-		return mcp.NewToolResultError("session_id is required"), nil
+		return mcp.NewToolResultError(errSessionIDRequired), nil
 	}
 	if localPath == "" {
 		return mcp.NewToolResultError("local_path is required"), nil
@@ -305,7 +305,7 @@ func (s *Server) handleShellTransferResume(ctx context.Context, req mcp.CallTool
 	manifestPath := mcp.ParseString(req, "manifest_path", "")
 
 	if sessionID == "" {
-		return mcp.NewToolResultError("session_id is required"), nil
+		return mcp.NewToolResultError(errSessionIDRequired), nil
 	}
 	if manifestPath == "" {
 		return mcp.NewToolResultError("manifest_path is required"), nil
@@ -338,7 +338,7 @@ func (s *Server) performChunkedGet(sess *session.Session, remotePath, localPath,
 
 	sftpClient, err := sess.SFTPClient()
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("get SFTP client: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf(errGetSFTPClient, err)), nil
 	}
 
 	// Get remote file info
@@ -398,7 +398,7 @@ func (s *Server) performChunkedGet(sess *session.Session, remotePath, localPath,
 	// Open remote file
 	remoteFile, _, err := sftpClient.GetFileStream(remotePath)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("open remote file: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf(errOpenRemoteFile, err)), nil
 	}
 	defer remoteFile.Close()
 
@@ -478,7 +478,7 @@ func (s *Server) performChunkedPut(sess *session.Session, localPath, remotePath,
 
 	sftpClient, err := sess.SFTPClient()
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("get SFTP client: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf(errGetSFTPClient, err)), nil
 	}
 
 	// Get local file info
@@ -522,7 +522,7 @@ func (s *Server) performChunkedPut(sess *session.Session, localPath, remotePath,
 	// Open local file
 	localFile, err := os.Open(localPath)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("open local file: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf(errOpenLocalFile, err)), nil
 	}
 	defer localFile.Close()
 
@@ -543,55 +543,39 @@ func (s *Server) performChunkedPut(sess *session.Session, localPath, remotePath,
 	return s.transferChunksPut(localFile, remoteFile, manifest, manifestPath, startTime)
 }
 
-func (s *Server) transferChunksPut(localFile *os.File, remoteFile io.WriteSeeker, manifest *TransferManifest, manifestPath string, startTime time.Time) (*mcp.CallToolResult, error) {
-	buf := make([]byte, manifest.ChunkSize)
-
-	for i := range manifest.Chunks {
-		if manifest.Chunks[i].Completed {
-			continue
-		}
-
-		chunk := &manifest.Chunks[i]
-
-		// Seek to chunk position in local file
-		if _, err := localFile.Seek(chunk.Offset, io.SeekStart); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("seek local: %v", err)), nil
-		}
-
-		// Read chunk from local
-		n, err := io.ReadFull(localFile, buf[:chunk.Size])
-		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-			saveManifest(manifest, manifestPath)
-			return mcp.NewToolResultError(fmt.Sprintf("read chunk %d: %v", i, err)), nil
-		}
-
-		// Calculate chunk checksum
-		hash := sha256.Sum256(buf[:n])
-		chunk.Checksum = hex.EncodeToString(hash[:])
-
-		// Seek to chunk position in remote file
-		if _, err := remoteFile.Seek(chunk.Offset, io.SeekStart); err != nil {
-			saveManifest(manifest, manifestPath)
-			return mcp.NewToolResultError(fmt.Sprintf("seek remote: %v", err)), nil
-		}
-
-		// Write to remote file
-		if _, err := remoteFile.Write(buf[:n]); err != nil {
-			saveManifest(manifest, manifestPath)
-			return mcp.NewToolResultError(fmt.Sprintf("write chunk %d: %v", i, err)), nil
-		}
-
-		chunk.Completed = true
-		manifest.BytesSent += int64(n)
-		manifest.LastUpdatedAt = time.Now()
-
-		// Save progress periodically
-		if i%10 == 0 || i == manifest.TotalChunks-1 {
-			saveManifest(manifest, manifestPath)
-		}
+// uploadChunk handles reading from local, checksumming, and writing to remote for a single chunk.
+func uploadChunk(localFile *os.File, remoteFile io.WriteSeeker, chunk *ChunkInfo, chunkIndex int, buf []byte, manifest *TransferManifest, manifestPath string) error {
+	if _, err := localFile.Seek(chunk.Offset, io.SeekStart); err != nil {
+		return fmt.Errorf("seek local: %v", err)
 	}
 
-	// Calculate final stats
+	n, err := io.ReadFull(localFile, buf[:chunk.Size])
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		saveManifest(manifest, manifestPath)
+		return fmt.Errorf("read chunk %d: %v", chunkIndex, err)
+	}
+
+	hash := sha256.Sum256(buf[:n])
+	chunk.Checksum = hex.EncodeToString(hash[:])
+
+	if _, err := remoteFile.Seek(chunk.Offset, io.SeekStart); err != nil {
+		saveManifest(manifest, manifestPath)
+		return fmt.Errorf("seek remote: %v", err)
+	}
+
+	if _, err := remoteFile.Write(buf[:n]); err != nil {
+		saveManifest(manifest, manifestPath)
+		return fmt.Errorf("write chunk %d: %v", chunkIndex, err)
+	}
+
+	chunk.Completed = true
+	manifest.BytesSent += int64(n)
+	manifest.LastUpdatedAt = time.Now()
+	return nil
+}
+
+// finalizeChunkedTransfer calculates final stats and saves the manifest.
+func finalizeChunkedTransfer(manifest *TransferManifest, manifestPath string, startTime time.Time) *ChunkedTransferResult {
 	duration := time.Since(startTime)
 	if duration.Seconds() > 0 {
 		manifest.BytesPerSecond = int64(float64(manifest.BytesSent) / duration.Seconds())
@@ -600,7 +584,7 @@ func (s *Server) transferChunksPut(localFile *os.File, remoteFile io.WriteSeeker
 	manifest.CompletedAt = &now
 	saveManifest(manifest, manifestPath)
 
-	result := ChunkedTransferResult{
+	return &ChunkedTransferResult{
 		Status:           "completed",
 		ManifestPath:     manifestPath,
 		ChunksCompleted:  manifest.TotalChunks,
@@ -611,8 +595,26 @@ func (s *Server) transferChunksPut(localFile *os.File, remoteFile io.WriteSeeker
 		BytesPerSecond:   manifest.BytesPerSecond,
 		DurationMs:       duration.Milliseconds(),
 	}
+}
 
-	return jsonResult(result)
+func (s *Server) transferChunksPut(localFile *os.File, remoteFile io.WriteSeeker, manifest *TransferManifest, manifestPath string, startTime time.Time) (*mcp.CallToolResult, error) {
+	buf := make([]byte, manifest.ChunkSize)
+
+	for i := range manifest.Chunks {
+		if manifest.Chunks[i].Completed {
+			continue
+		}
+
+		if err := uploadChunk(localFile, remoteFile, &manifest.Chunks[i], i, buf, manifest, manifestPath); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+
+		if i%10 == 0 || i == manifest.TotalChunks-1 {
+			saveManifest(manifest, manifestPath)
+		}
+	}
+
+	return jsonResult(finalizeChunkedTransfer(manifest, manifestPath, startTime))
 }
 
 func (s *Server) resumeChunkedGet(sess *session.Session, manifest *TransferManifest, manifestPath string) (*mcp.CallToolResult, error) {
@@ -620,20 +622,20 @@ func (s *Server) resumeChunkedGet(sess *session.Session, manifest *TransferManif
 
 	sftpClient, err := sess.SFTPClient()
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("get SFTP client: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf(errGetSFTPClient, err)), nil
 	}
 
 	// Open local file for writing
 	localFile, err := os.OpenFile(manifest.LocalPath, os.O_RDWR, 0644)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("open local file: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf(errOpenLocalFile, err)), nil
 	}
 	defer localFile.Close()
 
 	// Open remote file for reading
 	remoteFile, _, err := sftpClient.GetFileStream(manifest.RemotePath)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("open remote file: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf(errOpenRemoteFile, err)), nil
 	}
 	defer remoteFile.Close()
 
@@ -668,20 +670,20 @@ func (s *Server) resumeChunkedPut(sess *session.Session, manifest *TransferManif
 
 	sftpClient, err := sess.SFTPClient()
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("get SFTP client: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf(errGetSFTPClient, err)), nil
 	}
 
 	// Open local file for reading
 	localFile, err := os.Open(manifest.LocalPath)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("open local file: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf(errOpenLocalFile, err)), nil
 	}
 	defer localFile.Close()
 
 	// Open remote file for writing (append mode with seek support)
 	remoteFile, err := sftpClient.OpenFile(manifest.RemotePath, os.O_RDWR)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("open remote file: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf(errOpenRemoteFile, err)), nil
 	}
 	defer remoteFile.Close()
 

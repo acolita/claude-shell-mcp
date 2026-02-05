@@ -5,11 +5,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 
 	"github.com/acolita/claude-shell-mcp/internal/session"
 	"github.com/mark3labs/mcp-go/mcp"
 )
+
+const (
+	// maxOutputBytes is the maximum output size before automatic truncation.
+	// This prevents MCP protocol errors when output exceeds token limits.
+	maxOutputBytes = 100 * 1024 // 100KB
+)
+
+// heredocPattern detects heredoc syntax which is not supported over PTY.
+// Matches: <<EOF, <<'EOF', <<"EOF", <<-EOF, << EOF, etc.
+var heredocPattern = regexp.MustCompile(`<<-?\s*['"]?\w+['"]?`)
 
 // registerTools registers all MCP tools with the server.
 func (s *Server) registerTools() {
@@ -17,6 +28,7 @@ func (s *Server) registerTools() {
 	s.mcpServer.AddTool(shellSessionListTool(), s.handleShellSessionList)
 	s.mcpServer.AddTool(shellExecTool(), s.handleShellExec)
 	s.mcpServer.AddTool(shellProvideInputTool(), s.handleShellProvideInput)
+	s.mcpServer.AddTool(shellSendRawTool(), s.handleShellSendRaw)
 	s.mcpServer.AddTool(shellInterruptTool(), s.handleShellInterrupt)
 	s.mcpServer.AddTool(shellSessionStatusTool(), s.handleShellSessionStatus)
 	s.mcpServer.AddTool(shellSessionCloseTool(), s.handleShellSessionClose)
@@ -25,6 +37,15 @@ func (s *Server) registerTools() {
 	s.registerFileTransferTools()
 	s.registerRecursiveTransferTools()
 	s.registerChunkedTransferTools()
+
+	// Register SSH tunnel tools
+	s.registerTunnelTools()
+
+	// Register peak-tty management tools
+	s.registerPeakTTYTools()
+
+	// Register debug tool
+	s.mcpServer.AddTool(shellDebugTool(), s.handleShellDebug)
 }
 
 // Tool definitions
@@ -113,9 +134,12 @@ IMPORTANT: When status is "awaiting_input" with prompt_type "password":
 - Otherwise, you MUST ask the user for their password before calling shell_provide_input
 - NEVER call shell_provide_input with an empty string for passwords
 
-LIMITATION: Commands with embedded literal newlines (heredocs, multi-line strings) may incorrectly trigger "awaiting_input" due to shell continuation prompts. Use escaped newlines instead:
-- Use printf "line1\nline2\n" instead of literal newlines
-- Use echo -e "line1\nline2" for multi-line output`),
+HEREDOCS NOT SUPPORTED: Commands with heredocs (<<EOF, <<'EOF', <<"EOF", <<-EOF) are NOT supported and will be rejected. Heredocs cause PTY issues due to shell continuation prompts.
+
+For multi-line file content, use these alternatives:
+1. shell_file_put: Write content directly to a file (RECOMMENDED for config files, scripts, etc.)
+2. printf: printf '%s\n' 'line1' 'line2' | sudo tee /path/to/file
+3. echo -e: echo -e 'line1\nline2' | sudo tee /path/to/file`),
 		mcp.WithString("session_id",
 			mcp.Required(),
 			mcp.Description("The session ID returned by shell_session_create"),
@@ -156,7 +180,7 @@ For confirmation prompts (prompt_type: "confirmation"), provide "yes", "y", "Y",
 For interactive apps (prompt_type: "interactive"), provide the appropriate command (e.g., ":q!" for vim).`),
 		mcp.WithString("session_id",
 			mcp.Required(),
-			mcp.Description("The session ID"),
+			mcp.Description(descSessionID),
 		),
 		mcp.WithString("input",
 			mcp.Required(),
@@ -164,6 +188,60 @@ For interactive apps (prompt_type: "interactive"), provide the appropriate comma
 		),
 		mcp.WithBoolean("cache_for_sudo",
 			mcp.Description("Cache this input for subsequent sudo prompts (default: false)"),
+		),
+	)
+}
+
+func shellSendRawTool() mcp.Tool {
+	return mcp.NewTool("shell_send_raw",
+		mcp.WithDescription(`Send raw bytes to a session, including control characters and escape sequences.
+
+THIS IS A LOW-LEVEL TOOL - Use shell_provide_input for normal text input.
+
+=== WHEN TO USE THIS TOOL ===
+ONLY use shell_send_raw when you need to send:
+- EOF (Ctrl+D) to signal end of input to commands like sort, cat, bc
+- Escape sequences for terminal control
+- Binary data or special control characters
+- Input WITHOUT an automatic trailing newline
+
+=== WHEN NOT TO USE THIS TOOL ===
+DO NOT use shell_send_raw for:
+- Normal text input (use shell_provide_input instead)
+- Passwords (use shell_provide_input with cache_for_sudo)
+- Confirmations like "yes" or "Y" (use shell_provide_input)
+- Any input where you want a newline appended automatically
+
+=== ESCAPE SEQUENCES SUPPORTED ===
+- \x04 or \004 = EOF (Ctrl+D) - signals end of input
+- \x03 or \003 = Interrupt (Ctrl+C) - use shell_interrupt instead
+- \x1b or \033 or \e = Escape character
+- \n = newline (LF)
+- \r = carriage return (CR)
+- \t = tab
+- \\ = literal backslash
+
+=== EXAMPLES ===
+1. Send EOF to finish input for 'sort':
+   shell_send_raw(input="\x04")
+
+2. Send text followed by EOF (no trailing newline):
+   shell_send_raw(input="final line\n\x04")
+
+3. Send escape sequence:
+   shell_send_raw(input="\x1b[A")  // Arrow up
+
+=== IMPORTANT NOTES ===
+- No newline is appended - include \n explicitly if needed
+- Session must be in awaiting_input state
+- For Ctrl+C interrupts, prefer shell_interrupt tool instead`),
+		mcp.WithString("session_id",
+			mcp.Required(),
+			mcp.Description(descSessionID),
+		),
+		mcp.WithString("input",
+			mcp.Required(),
+			mcp.Description("Raw input with escape sequences (e.g., '\\x04' for EOF, '\\n' for newline)"),
 		),
 	)
 }
@@ -177,7 +255,7 @@ Use this to cancel long-running commands or exit interactive prompts. Note: Some
 After interrupt, the session returns to idle state and is ready for new commands.`),
 		mcp.WithString("session_id",
 			mcp.Required(),
-			mcp.Description("The session ID"),
+			mcp.Description(descSessionID),
 		),
 	)
 }
@@ -191,7 +269,7 @@ Returns session state (idle, running, awaiting_input), current working directory
 Useful for debugging or verifying session state before executing commands.`),
 		mcp.WithString("session_id",
 			mcp.Required(),
-			mcp.Description("The session ID"),
+			mcp.Description(descSessionID),
 		),
 	)
 }
@@ -205,12 +283,34 @@ Terminates the shell process and releases resources. For SSH sessions, closes th
 If session recording was enabled, returns the path to the recording file.`),
 		mcp.WithString("session_id",
 			mcp.Required(),
-			mcp.Description("The session ID"),
+			mcp.Description(descSessionID),
 		),
 	)
 }
 
 // Tool handlers
+
+// validateSSHParams validates SSH mode parameters and rate limiting.
+func (s *Server) validateSSHParams(host, user string) *mcp.CallToolResult {
+	if host == "" {
+		return mcp.NewToolResultError("host is required for ssh mode")
+	}
+	if user == "" {
+		return mcp.NewToolResultError("user is required for ssh mode")
+	}
+
+	if locked, remaining := s.authRateLimiter.IsLocked(host, user); locked {
+		slog.Warn("auth rate limited",
+			slog.String("host", host),
+			slog.String("user", user),
+			slog.Duration("remaining", remaining),
+		)
+		return mcp.NewToolResultError(
+			fmt.Sprintf("authentication locked due to too many failures, try again in %v", remaining),
+		)
+	}
+	return nil
+}
 
 func (s *Server) handleShellSessionCreate(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	mode := mcp.ParseString(req, "mode", s.config.Mode)
@@ -223,25 +323,9 @@ func (s *Server) handleShellSessionCreate(ctx context.Context, req mcp.CallToolR
 	user := mcp.ParseString(req, "user", "")
 	keyPath := mcp.ParseString(req, "key_path", "")
 
-	// Validate SSH parameters
 	if mode == "ssh" {
-		if host == "" {
-			return mcp.NewToolResultError("host is required for ssh mode"), nil
-		}
-		if user == "" {
-			return mcp.NewToolResultError("user is required for ssh mode"), nil
-		}
-
-		// Check rate limiting for SSH connections
-		if locked, remaining := s.authRateLimiter.IsLocked(host, user); locked {
-			slog.Warn("auth rate limited",
-				slog.String("host", host),
-				slog.String("user", user),
-				slog.Duration("remaining", remaining),
-			)
-			return mcp.NewToolResultError(
-				fmt.Sprintf("authentication locked due to too many failures, try again in %v", remaining),
-			), nil
+		if errResult := s.validateSSHParams(host, user); errResult != nil {
+			return errResult, nil
 		}
 	}
 
@@ -305,6 +389,76 @@ func (s *Server) handleShellSessionList(ctx context.Context, req mcp.CallToolReq
 	return jsonResult(result)
 }
 
+// tryCachedSudoInjection attempts to auto-inject a cached sudo password.
+// Returns updated result and any error that occurred.
+func (s *Server) tryCachedSudoInjection(sessionID string, sess *session.Session, result *session.ExecResult) (*session.ExecResult, error) {
+	if result.Status != "awaiting_input" || result.PromptType != "password" {
+		return result, nil
+	}
+
+	cachedPwd := s.sudoCache.Get(sessionID)
+	if cachedPwd == nil {
+		return result, nil
+	}
+
+	slog.Info("auto-injecting cached sudo password", slog.String("session_id", sessionID))
+	s.recordingManager.RecordInput(sessionID, string(cachedPwd), true)
+
+	newResult, err := sess.ProvideInput(string(cachedPwd))
+	if err != nil {
+		return nil, err
+	}
+
+	s.recordingManager.RecordOutput(sessionID, newResult.Stdout)
+	newResult.SudoAuthenticated = true
+	newResult.SudoExpiresInSeconds = int(s.sudoCache.ExpiresIn(sessionID).Seconds())
+	return newResult, nil
+}
+
+// applyAutoTruncation truncates output that exceeds maxOutputBytes.
+func applyAutoTruncation(sessionID string, result *session.ExecResult) {
+	if len(result.Stdout) <= maxOutputBytes {
+		return
+	}
+
+	result.TotalBytes = len(result.Stdout)
+	result.Stdout = result.Stdout[:maxOutputBytes]
+	result.TruncatedBytes = maxOutputBytes
+	result.Truncated = true
+	result.Warning = fmt.Sprintf(
+		"Output truncated from %d bytes to %d bytes. For large files, use shell_file_get instead, or use tail_lines/head_lines parameters to limit output.",
+		result.TotalBytes, maxOutputBytes,
+	)
+	slog.Warn("output auto-truncated",
+		slog.String("session_id", sessionID),
+		slog.Int("original_bytes", result.TotalBytes),
+		slog.Int("truncated_bytes", maxOutputBytes),
+	)
+}
+
+// validateExecParams validates parameters for shell_exec.
+func validateExecParams(sessionID, command string, tailLines, headLines int) *mcp.CallToolResult {
+	if sessionID == "" {
+		return mcp.NewToolResultError(errSessionIDRequired)
+	}
+	if command == "" {
+		return mcp.NewToolResultError("command is required")
+	}
+	if tailLines > 0 && headLines > 0 {
+		return mcp.NewToolResultError("cannot use both tail_lines and head_lines")
+	}
+	if heredocPattern.MatchString(command) {
+		return mcp.NewToolResultError(
+			"Heredocs (<<EOF, <<'EOF', etc.) are not supported over PTY sessions. " +
+				"Use one of these alternatives instead:\n" +
+				"1. shell_file_put: Write multi-line content directly to a file (recommended)\n" +
+				"2. printf: printf '%s\\n' 'line1' 'line2' | sudo tee /path/to/file\n" +
+				"3. echo -e: echo -e 'line1\\nline2' | sudo tee /path/to/file",
+		)
+	}
+	return nil
+}
+
 func (s *Server) handleShellExec(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	sessionID := mcp.ParseString(req, "session_id", "")
 	command := mcp.ParseString(req, "command", "")
@@ -312,22 +466,12 @@ func (s *Server) handleShellExec(ctx context.Context, req mcp.CallToolRequest) (
 	tailLines := mcp.ParseInt(req, "tail_lines", 0)
 	headLines := mcp.ParseInt(req, "head_lines", 0)
 
-	if sessionID == "" {
-		return mcp.NewToolResultError("session_id is required"), nil
-	}
-	if command == "" {
-		return mcp.NewToolResultError("command is required"), nil
-	}
-	if tailLines > 0 && headLines > 0 {
-		return mcp.NewToolResultError("cannot use both tail_lines and head_lines"), nil
+	if errResult := validateExecParams(sessionID, command, tailLines, headLines); errResult != nil {
+		return errResult, nil
 	}
 
-	// Check command filter
 	if allowed, reason := s.commandFilter.IsAllowed(command); !allowed {
-		slog.Warn("command blocked by filter",
-			slog.String("command", command),
-			slog.String("reason", reason),
-		)
+		slog.Warn("command blocked by filter", slog.String("command", command), slog.String("reason", reason))
 		return mcp.NewToolResultError("command blocked: " + reason), nil
 	}
 
@@ -336,12 +480,7 @@ func (s *Server) handleShellExec(ctx context.Context, req mcp.CallToolRequest) (
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	slog.Info("executing command",
-		slog.String("session_id", sessionID),
-		slog.String("command", command),
-	)
-
-	// Record command input
+	slog.Info("executing command", slog.String("session_id", sessionID), slog.String("command", command))
 	s.recordingManager.RecordInput(sessionID, command+"\n", false)
 
 	result, err := sess.Exec(command, timeoutMs)
@@ -349,38 +488,18 @@ func (s *Server) handleShellExec(ctx context.Context, req mcp.CallToolRequest) (
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	// Record output
 	s.recordingManager.RecordOutput(sessionID, result.Stdout)
 
-	// If a sudo password prompt is detected and we have a cached password, auto-inject it
-	if result.Status == "awaiting_input" && result.PromptType == "password" {
-		if cachedPwd := s.sudoCache.Get(sessionID); cachedPwd != nil {
-			slog.Info("auto-injecting cached sudo password",
-				slog.String("session_id", sessionID),
-			)
-
-			// Record masked password input
-			s.recordingManager.RecordInput(sessionID, string(cachedPwd), true)
-
-			// Provide the cached password
-			result, err = sess.ProvideInput(string(cachedPwd))
-			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
-			}
-
-			// Record output after password
-			s.recordingManager.RecordOutput(sessionID, result.Stdout)
-
-			// Mark that we used cached sudo
-			result.SudoAuthenticated = true
-			result.SudoExpiresInSeconds = int(s.sudoCache.ExpiresIn(sessionID).Seconds())
-		}
+	result, err = s.tryCachedSudoInjection(sessionID, sess, result)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	// Apply output limiting (tail_lines or head_lines)
 	if result.Stdout != "" && (tailLines > 0 || headLines > 0) {
 		result.Stdout, result.Truncated, result.TotalLines, result.ShownLines = truncateOutput(result.Stdout, tailLines, headLines)
 	}
+
+	applyAutoTruncation(sessionID, result)
 
 	return jsonResult(result)
 }
@@ -391,7 +510,7 @@ func (s *Server) handleShellProvideInput(ctx context.Context, req mcp.CallToolRe
 	cacheForSudo := mcp.ParseBoolean(req, "cache_for_sudo", false)
 
 	if sessionID == "" {
-		return mcp.NewToolResultError("session_id is required"), nil
+		return mcp.NewToolResultError(errSessionIDRequired), nil
 	}
 
 	sess, err := s.sessionManager.Get(sessionID)
@@ -431,6 +550,70 @@ func (s *Server) handleShellProvideInput(ctx context.Context, req mcp.CallToolRe
 		result.SudoExpiresInSeconds = int(expiresIn.Seconds())
 	}
 
+	// Auto-truncate if output exceeds maxOutputBytes to prevent MCP protocol errors
+	if len(result.Stdout) > maxOutputBytes {
+		result.TotalBytes = len(result.Stdout)
+		result.Stdout = result.Stdout[:maxOutputBytes]
+		result.TruncatedBytes = maxOutputBytes
+		result.Truncated = true
+		result.Warning = fmt.Sprintf(
+			"Output truncated from %d bytes to %d bytes. For large files, use shell_file_get instead, or use tail_lines/head_lines parameters to limit output.",
+			result.TotalBytes, maxOutputBytes,
+		)
+		slog.Warn("output auto-truncated",
+			slog.String("session_id", sessionID),
+			slog.Int("original_bytes", result.TotalBytes),
+			slog.Int("truncated_bytes", maxOutputBytes),
+		)
+	}
+
+	return jsonResult(result)
+}
+
+func (s *Server) handleShellSendRaw(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	sessionID := mcp.ParseString(req, "session_id", "")
+	input := mcp.ParseString(req, "input", "")
+
+	if sessionID == "" {
+		return mcp.NewToolResultError(errSessionIDRequired), nil
+	}
+	if input == "" {
+		return mcp.NewToolResultError("input is required"), nil
+	}
+
+	sess, err := s.sessionManager.Get(sessionID)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	slog.Info("sending raw input to session",
+		slog.String("session_id", sessionID),
+		slog.Int("input_len", len(input)),
+	)
+
+	// Record raw input (not masked - user is responsible for sensitive data)
+	s.recordingManager.RecordInput(sessionID, input, false)
+
+	result, err := sess.SendRaw(input)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	// Record output
+	s.recordingManager.RecordOutput(sessionID, result.Stdout)
+
+	// Auto-truncate if output exceeds maxOutputBytes
+	if len(result.Stdout) > maxOutputBytes {
+		result.TotalBytes = len(result.Stdout)
+		result.Stdout = result.Stdout[:maxOutputBytes]
+		result.TruncatedBytes = maxOutputBytes
+		result.Truncated = true
+		result.Warning = fmt.Sprintf(
+			"Output truncated from %d bytes to %d bytes.",
+			result.TotalBytes, maxOutputBytes,
+		)
+	}
+
 	return jsonResult(result)
 }
 
@@ -438,7 +621,7 @@ func (s *Server) handleShellInterrupt(ctx context.Context, req mcp.CallToolReque
 	sessionID := mcp.ParseString(req, "session_id", "")
 
 	if sessionID == "" {
-		return mcp.NewToolResultError("session_id is required"), nil
+		return mcp.NewToolResultError(errSessionIDRequired), nil
 	}
 
 	sess, err := s.sessionManager.Get(sessionID)
@@ -461,7 +644,7 @@ func (s *Server) handleShellSessionStatus(ctx context.Context, req mcp.CallToolR
 	sessionID := mcp.ParseString(req, "session_id", "")
 
 	if sessionID == "" {
-		return mcp.NewToolResultError("session_id is required"), nil
+		return mcp.NewToolResultError(errSessionIDRequired), nil
 	}
 
 	sess, err := s.sessionManager.Get(sessionID)
@@ -494,7 +677,7 @@ func (s *Server) handleShellSessionClose(ctx context.Context, req mcp.CallToolRe
 	sessionID := mcp.ParseString(req, "session_id", "")
 
 	if sessionID == "" {
-		return mcp.NewToolResultError("session_id is required"), nil
+		return mcp.NewToolResultError(errSessionIDRequired), nil
 	}
 
 	slog.Info("closing session",
@@ -563,4 +746,106 @@ func truncateOutput(output string, tailLines, headLines int) (string, bool, int,
 	}
 
 	return output, false, totalLines, totalLines
+}
+
+func shellDebugTool() mcp.Tool {
+	return mcp.NewTool("shell_debug",
+		mcp.WithDescription(`Debug tool to inspect internal session state.
+
+Returns detailed internal information about a session including:
+- PTY name and control session availability
+- Internal state for debugging issues
+
+This tool is for debugging only and may change without notice.`),
+		mcp.WithString("session_id",
+			mcp.Required(),
+			mcp.Description("The session ID to inspect"),
+		),
+		mcp.WithString("action",
+			mcp.Description("Debug action: 'status' (default), 'foreground', 'control_exec'"),
+		),
+		mcp.WithString("command",
+			mcp.Description("Command to run via control session (only for action='control_exec')"),
+		),
+	)
+}
+
+// handleDebugForegroundAction handles the "foreground" debug action.
+func handleDebugForegroundAction(sess *session.Session, status session.SessionStatus, result map[string]any) {
+	tm, err := sess.TunnelManager()
+	if err != nil {
+		result["error"] = "no tunnel manager (not SSH or not connected)"
+	} else {
+		result["tunnel_manager"] = tm != nil
+	}
+
+	if status.HasControlSession && status.PTYName != "" {
+		result["control_plane_available"] = true
+		result["note"] = "Use control_exec action with command='ps -t pts/" + status.PTYName + " -o pid,stat,comm,wchan --no-headers' to check foreground process"
+		return
+	}
+
+	result["control_plane_available"] = false
+	if status.PTYName == "" {
+		result["issue"] = "PTYName not detected"
+	}
+	if !status.HasControlSession {
+		result["issue"] = "controlSession not initialized"
+	}
+}
+
+// handleDebugControlExecAction handles the "control_exec" debug action.
+func handleDebugControlExecAction(ctx context.Context, sess *session.Session, status session.SessionStatus, command string, result map[string]any) *mcp.CallToolResult {
+	if command == "" {
+		return mcp.NewToolResultError("command is required for control_exec action")
+	}
+	if !status.HasControlSession {
+		return mcp.NewToolResultError("control session not available")
+	}
+
+	output, err := sess.ControlExec(ctx, command)
+	if err != nil {
+		result["error"] = err.Error()
+	}
+	result["output"] = output
+	return nil
+}
+
+func (s *Server) handleShellDebug(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	sessionID := mcp.ParseString(req, "session_id", "")
+	action := mcp.ParseString(req, "action", "status")
+	command := mcp.ParseString(req, "command", "")
+
+	if sessionID == "" {
+		return mcp.NewToolResultError(errSessionIDRequired), nil
+	}
+
+	sess, err := s.sessionManager.Get(sessionID)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	result := map[string]any{
+		"session_id": sessionID,
+		"action":     action,
+	}
+
+	status := sess.Status()
+	result["pty_name"] = status.PTYName
+	result["has_control_session"] = status.HasControlSession
+	result["state"] = status.State
+	result["mode"] = status.Mode
+
+	switch action {
+	case "status":
+		// Basic debug info already populated above
+	case "foreground":
+		handleDebugForegroundAction(sess, status, result)
+	case "control_exec":
+		if errResult := handleDebugControlExecAction(ctx, sess, status, command, result); errResult != nil {
+			return errResult, nil
+		}
+	}
+
+	return jsonResult(result)
 }

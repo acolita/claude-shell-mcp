@@ -108,15 +108,16 @@ func (m *Manager) recover(id string) (*Session, error) {
 
 	// Recreate the session with stored metadata
 	sess := &Session{
-		ID:      id, // Use the same ID!
-		State:   StateIdle,
-		Mode:    meta.Mode,
-		Host:    meta.Host,
-		Port:    meta.Port,
-		User:    meta.User,
-		KeyPath: meta.KeyPath,
-		Cwd:     meta.Cwd,
-		config:  m.config,
+		ID:           id, // Use the same ID!
+		State:        StateIdle,
+		Mode:         meta.Mode,
+		Host:         meta.Host,
+		Port:         meta.Port,
+		User:         meta.User,
+		KeyPath:      meta.KeyPath,
+		Cwd:          meta.Cwd,
+		SavedTunnels: meta.Tunnels, // Saved tunnels for user to restore
+		config:       m.config,
 	}
 
 	// Initialize the session (creates PTY/SSH connection)

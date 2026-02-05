@@ -70,7 +70,7 @@ func ShellEnv(shell string) []string {
 		// Zsh uses PROMPT instead of PS1 for left prompt
 		env = append(env,
 			"PROMPT=$ ",         // Simple prompt for zsh
-			"PS1=$ ",            // Also set PS1 for compatibility
+			envPS1,              // Also set PS1 for compatibility
 			"PROMPT_COMMAND=",   // Disable prompt command
 			"precmd_functions=", // Disable zsh precmd hooks
 			"RPROMPT=",          // Disable right prompt
@@ -78,13 +78,13 @@ func ShellEnv(shell string) []string {
 	case "fish":
 		// Fish uses functions, we'll handle it differently
 		env = append(env,
-			"PS1=$ ",
+			envPS1,
 			"fish_greeting=", // Disable greeting
 		)
 	default:
 		// Bash and other POSIX shells
 		env = append(env,
-			"PS1=$ ",
+			envPS1,
 			"PROMPT_COMMAND=",
 		)
 	}

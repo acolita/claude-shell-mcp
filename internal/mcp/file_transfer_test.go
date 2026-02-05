@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestRandomSuffix(t *testing.T) {
@@ -328,5 +329,88 @@ func TestDefaultExclusions(t *testing.T) {
 		if !found {
 			t.Errorf("expected %q to be in defaultExclusions", pattern)
 		}
+	}
+}
+
+func TestBuildRelPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		parent   string
+		filename string
+		want     string
+	}{
+		{"empty parent", "", "file.txt", "file.txt"},
+		{"with parent", "dir", "file.txt", "dir/file.txt"},
+		{"nested parent", "dir/subdir", "file.txt", "dir/subdir/file.txt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildRelPath(tt.parent, tt.filename)
+			if got != tt.want {
+				t.Errorf("buildRelPath(%q, %q) = %q, want %q", tt.parent, tt.filename, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDirTransferResultAddError(t *testing.T) {
+	result := DirTransferResult{Status: "completed"}
+
+	result.addError("/path/to/file", "permission denied")
+	result.addError("/other/file", "file not found")
+
+	if len(result.Errors) != 2 {
+		t.Errorf("expected 2 errors, got %d", len(result.Errors))
+	}
+
+	if result.Errors[0].Path != "/path/to/file" {
+		t.Errorf("first error path mismatch")
+	}
+	if result.Errors[1].Error != "file not found" {
+		t.Errorf("second error message mismatch")
+	}
+}
+
+func TestFinalizeTransferResult(t *testing.T) {
+	result := DirTransferResult{
+		Status:           "completed",
+		FilesTransferred: 5,
+		TotalBytes:       1024,
+	}
+
+	startTime := time.Now().Add(-2 * time.Second)
+	finalizeTransferResult(&result, startTime)
+
+	if result.DurationMs < 2000 {
+		t.Errorf("expected duration >= 2000ms, got %d", result.DurationMs)
+	}
+
+	if result.BytesPerSecond == 0 {
+		t.Error("expected non-zero bytes per second")
+	}
+
+	// Test with errors
+	result2 := DirTransferResult{
+		Status: "completed",
+		Errors: []TransferError{{Path: "/test", Error: "err"}},
+	}
+	finalizeTransferResult(&result2, time.Now())
+
+	if result2.Status != "completed_with_errors" {
+		t.Errorf("expected status 'completed_with_errors', got %q", result2.Status)
+	}
+}
+
+func TestSymlinkAction(t *testing.T) {
+	// Test symlinkAction constants exist and are distinct
+	actions := []symlinkAction{symlinkSkip, symlinkHandled, symlinkFollow, symlinkError}
+	seen := make(map[symlinkAction]bool)
+
+	for _, action := range actions {
+		if seen[action] {
+			t.Errorf("duplicate symlinkAction value")
+		}
+		seen[action] = true
 	}
 }

@@ -188,9 +188,9 @@ func (d *Detector) checkPackageManagement(command string) *Prediction {
 		pattern *regexp.Regexp
 		reason  string
 	}{
-		{regexp.MustCompile(`apt(-get)?\s+(install|remove|purge|update|upgrade|dist-upgrade)`), "Package installation/removal"},
-		{regexp.MustCompile(`yum\s+(install|remove|update)`), "Package installation/removal"},
-		{regexp.MustCompile(`dnf\s+(install|remove|update)`), "Package installation/removal"},
+		{regexp.MustCompile(`apt(-get)?\s+(install|remove|purge|update|upgrade|dist-upgrade)`), descPackageInstallRemove},
+		{regexp.MustCompile(`yum\s+(install|remove|update)`), descPackageInstallRemove},
+		{regexp.MustCompile(`dnf\s+(install|remove|update)`), descPackageInstallRemove},
 		{regexp.MustCompile(`pacman\s+-S`), "Package installation"},
 		{regexp.MustCompile(`npm\s+install\s+-g`), "Global npm package installation"},
 	}

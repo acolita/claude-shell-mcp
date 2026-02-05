@@ -64,12 +64,12 @@ func (ks *KeyringStore) SetEnabled(enabled bool) {
 // StoreSSHPassphrase stores an SSH key passphrase in the keyring.
 func (ks *KeyringStore) StoreSSHPassphrase(keyPath string, passphrase []byte) error {
 	if !ks.IsEnabled() {
-		return fmt.Errorf("keyring not available")
+		return fmt.Errorf(errKeyringNotAvailable)
 	}
 
 	// Base64 encode to safely store binary data
 	encoded := base64.StdEncoding.EncodeToString(passphrase)
-	key := fmt.Sprintf("ssh-passphrase:%s", keyPath)
+	key := fmt.Sprintf(keySSHPassphraseFmt, keyPath)
 
 	if err := keyring.Set(KeyringService, key, encoded); err != nil {
 		return fmt.Errorf("failed to store SSH passphrase: %w", err)
@@ -84,10 +84,10 @@ func (ks *KeyringStore) StoreSSHPassphrase(keyPath string, passphrase []byte) er
 // GetSSHPassphrase retrieves an SSH key passphrase from the keyring.
 func (ks *KeyringStore) GetSSHPassphrase(keyPath string) ([]byte, error) {
 	if !ks.IsEnabled() {
-		return nil, fmt.Errorf("keyring not available")
+		return nil, fmt.Errorf(errKeyringNotAvailable)
 	}
 
-	key := fmt.Sprintf("ssh-passphrase:%s", keyPath)
+	key := fmt.Sprintf(keySSHPassphraseFmt, keyPath)
 	encoded, err := keyring.Get(KeyringService, key)
 	if err != nil {
 		if err == keyring.ErrNotFound {
@@ -107,10 +107,10 @@ func (ks *KeyringStore) GetSSHPassphrase(keyPath string) ([]byte, error) {
 // DeleteSSHPassphrase removes an SSH key passphrase from the keyring.
 func (ks *KeyringStore) DeleteSSHPassphrase(keyPath string) error {
 	if !ks.IsEnabled() {
-		return fmt.Errorf("keyring not available")
+		return fmt.Errorf(errKeyringNotAvailable)
 	}
 
-	key := fmt.Sprintf("ssh-passphrase:%s", keyPath)
+	key := fmt.Sprintf(keySSHPassphraseFmt, keyPath)
 	if err := keyring.Delete(KeyringService, key); err != nil {
 		if err == keyring.ErrNotFound {
 			return nil // Already deleted
@@ -124,11 +124,11 @@ func (ks *KeyringStore) DeleteSSHPassphrase(keyPath string) error {
 // StoreSudoPassword stores a sudo password in the keyring.
 func (ks *KeyringStore) StoreSudoPassword(host, user string, password []byte) error {
 	if !ks.IsEnabled() {
-		return fmt.Errorf("keyring not available")
+		return fmt.Errorf(errKeyringNotAvailable)
 	}
 
 	encoded := base64.StdEncoding.EncodeToString(password)
-	key := fmt.Sprintf("sudo:%s@%s", user, host)
+	key := fmt.Sprintf(keySudoFmt, user, host)
 
 	if err := keyring.Set(KeyringService, key, encoded); err != nil {
 		return fmt.Errorf("failed to store sudo password: %w", err)
@@ -144,10 +144,10 @@ func (ks *KeyringStore) StoreSudoPassword(host, user string, password []byte) er
 // GetSudoPassword retrieves a sudo password from the keyring.
 func (ks *KeyringStore) GetSudoPassword(host, user string) ([]byte, error) {
 	if !ks.IsEnabled() {
-		return nil, fmt.Errorf("keyring not available")
+		return nil, fmt.Errorf(errKeyringNotAvailable)
 	}
 
-	key := fmt.Sprintf("sudo:%s@%s", user, host)
+	key := fmt.Sprintf(keySudoFmt, user, host)
 	encoded, err := keyring.Get(KeyringService, key)
 	if err != nil {
 		if err == keyring.ErrNotFound {
@@ -167,10 +167,10 @@ func (ks *KeyringStore) GetSudoPassword(host, user string) ([]byte, error) {
 // DeleteSudoPassword removes a sudo password from the keyring.
 func (ks *KeyringStore) DeleteSudoPassword(host, user string) error {
 	if !ks.IsEnabled() {
-		return fmt.Errorf("keyring not available")
+		return fmt.Errorf(errKeyringNotAvailable)
 	}
 
-	key := fmt.Sprintf("sudo:%s@%s", user, host)
+	key := fmt.Sprintf(keySudoFmt, user, host)
 	if err := keyring.Delete(KeyringService, key); err != nil {
 		if err == keyring.ErrNotFound {
 			return nil
@@ -184,11 +184,11 @@ func (ks *KeyringStore) DeleteSudoPassword(host, user string) error {
 // StoreServerPassword stores a server password in the keyring (for password-based SSH auth).
 func (ks *KeyringStore) StoreServerPassword(host, user string, password []byte) error {
 	if !ks.IsEnabled() {
-		return fmt.Errorf("keyring not available")
+		return fmt.Errorf(errKeyringNotAvailable)
 	}
 
 	encoded := base64.StdEncoding.EncodeToString(password)
-	key := fmt.Sprintf("server:%s@%s", user, host)
+	key := fmt.Sprintf(keyServerFmt, user, host)
 
 	if err := keyring.Set(KeyringService, key, encoded); err != nil {
 		return fmt.Errorf("failed to store server password: %w", err)
@@ -204,10 +204,10 @@ func (ks *KeyringStore) StoreServerPassword(host, user string, password []byte) 
 // GetServerPassword retrieves a server password from the keyring.
 func (ks *KeyringStore) GetServerPassword(host, user string) ([]byte, error) {
 	if !ks.IsEnabled() {
-		return nil, fmt.Errorf("keyring not available")
+		return nil, fmt.Errorf(errKeyringNotAvailable)
 	}
 
-	key := fmt.Sprintf("server:%s@%s", user, host)
+	key := fmt.Sprintf(keyServerFmt, user, host)
 	encoded, err := keyring.Get(KeyringService, key)
 	if err != nil {
 		if err == keyring.ErrNotFound {
@@ -227,10 +227,10 @@ func (ks *KeyringStore) GetServerPassword(host, user string) ([]byte, error) {
 // DeleteServerPassword removes a server password from the keyring.
 func (ks *KeyringStore) DeleteServerPassword(host, user string) error {
 	if !ks.IsEnabled() {
-		return fmt.Errorf("keyring not available")
+		return fmt.Errorf(errKeyringNotAvailable)
 	}
 
-	key := fmt.Sprintf("server:%s@%s", user, host)
+	key := fmt.Sprintf(keyServerFmt, user, host)
 	if err := keyring.Delete(KeyringService, key); err != nil {
 		if err == keyring.ErrNotFound {
 			return nil

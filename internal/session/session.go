@@ -20,6 +20,7 @@ import (
 	localpty "github.com/acolita/claude-shell-mcp/internal/pty"
 	"github.com/acolita/claude-shell-mcp/internal/sftp"
 	"github.com/acolita/claude-shell-mcp/internal/ssh"
+	gossh "golang.org/x/crypto/ssh"
 )
 
 // State represents the session state.
@@ -64,6 +65,9 @@ type Session struct {
 
 	// PTY info for control plane
 	PTYName string // e.g., "3" for /dev/pts/3
+
+	// Saved tunnel configs from before MCP restart (for user to restore)
+	SavedTunnels []TunnelConfig
 
 	// Internal fields
 	config         *config.Config
@@ -130,8 +134,8 @@ func (s *Session) initializeLocal() error {
 	// Get PTY name for control plane (e.g., "3" from "/dev/pts/3")
 	if f := localPTY.File(); f != nil {
 		ptyPath := f.Name()
-		if strings.HasPrefix(ptyPath, "/dev/pts/") {
-			s.PTYName = strings.TrimPrefix(ptyPath, "/dev/pts/")
+		if strings.HasPrefix(ptyPath, devPtsPrefix) {
+			s.PTYName = strings.TrimPrefix(ptyPath, devPtsPrefix)
 		}
 	}
 
@@ -182,6 +186,32 @@ func (s *Session) shellPromptCommand() string {
 
 // initializeSSH sets up an SSH PTY session.
 func (s *Session) initializeSSH() error {
+	if err := s.validateSSHConfig(); err != nil {
+		return err
+	}
+
+	authCfg := s.buildSSHAuthConfig()
+	authMethods, err := ssh.BuildAuthMethods(authCfg)
+	if err != nil {
+		return fmt.Errorf("build auth methods: %w", err)
+	}
+
+	client, err := s.createSSHClient(authMethods)
+	if err != nil {
+		return err
+	}
+
+	if err := s.setupSSHPTY(client); err != nil {
+		client.Close()
+		return err
+	}
+
+	s.initializeSSHShell()
+	return nil
+}
+
+// validateSSHConfig validates SSH configuration.
+func (s *Session) validateSSHConfig() error {
 	if s.Host == "" {
 		return fmt.Errorf("host is required for ssh mode")
 	}
@@ -191,43 +221,47 @@ func (s *Session) initializeSSH() error {
 	if s.Port == 0 {
 		s.Port = 22
 	}
+	return nil
+}
 
-	// Build auth methods
+// buildSSHAuthConfig constructs authentication configuration.
+func (s *Session) buildSSHAuthConfig() ssh.AuthConfig {
 	authCfg := ssh.AuthConfig{
-		UseAgent: true, // Try SSH agent first
+		UseAgent: true,
 		Password: s.Password,
-		KeyPath:  s.KeyPath, // Use key_path from session if provided
-		Host:     s.Host,    // For SSH config lookup
+		KeyPath:  s.KeyPath,
+		Host:     s.Host,
 	}
 
-	// Check for key path in config (only if not already set)
 	if authCfg.KeyPath == "" && s.config != nil {
-		for _, srv := range s.config.Servers {
-			if srv.Host == s.Host || srv.Name == s.Host {
-				if srv.KeyPath != "" {
-					authCfg.KeyPath = srv.KeyPath
-				}
-				if srv.Auth.PassphraseEnv != "" {
-					authCfg.KeyPassphrase = os.Getenv(srv.Auth.PassphraseEnv)
-				}
-				break
-			}
+		s.applyServerAuthConfig(&authCfg)
+	}
+	return authCfg
+}
+
+// applyServerAuthConfig applies authentication settings from server config.
+func (s *Session) applyServerAuthConfig(authCfg *ssh.AuthConfig) {
+	for _, srv := range s.config.Servers {
+		if srv.Host != s.Host && srv.Name != s.Host {
+			continue
 		}
+		if srv.KeyPath != "" {
+			authCfg.KeyPath = srv.KeyPath
+		}
+		if srv.Auth.PassphraseEnv != "" {
+			authCfg.KeyPassphrase = os.Getenv(srv.Auth.PassphraseEnv)
+		}
+		break
 	}
+}
 
-	authMethods, err := ssh.BuildAuthMethods(authCfg)
-	if err != nil {
-		return fmt.Errorf("build auth methods: %w", err)
-	}
-
-	// Build host key callback
+// createSSHClient creates and connects an SSH client.
+func (s *Session) createSSHClient(authMethods []gossh.AuthMethod) (*ssh.Client, error) {
 	hostKeyCallback, err := ssh.BuildHostKeyCallback("")
 	if err != nil {
-		// Fall back to insecure if known_hosts parsing fails
 		hostKeyCallback = ssh.InsecureHostKeyCallback()
 	}
 
-	// Create SSH client
 	clientOpts := ssh.ClientOptions{
 		Host:            s.Host,
 		Port:            s.Port,
@@ -239,68 +273,93 @@ func (s *Session) initializeSSH() error {
 
 	client, err := ssh.NewClient(clientOpts)
 	if err != nil {
-		return fmt.Errorf("create ssh client: %w", err)
+		return nil, fmt.Errorf("create ssh client: %w", err)
 	}
 
 	if err := client.Connect(); err != nil {
-		return fmt.Errorf("connect: %w", err)
+		return nil, fmt.Errorf("connect: %w", err)
 	}
 
 	s.sshClient = client
+	return client, nil
+}
 
-	// Create SSH PTY
+// setupSSHPTY creates and configures the SSH PTY.
+func (s *Session) setupSSHPTY(client *ssh.Client) error {
 	ptyOpts := ssh.DefaultSSHPTYOptions()
 	sshPTY, err := ssh.NewSSHPTY(client, ptyOpts)
 	if err != nil {
-		client.Close()
 		return fmt.Errorf("create ssh pty: %w", err)
 	}
 
 	s.pty = &sshPTYAdapter{pty: sshPTY}
-	s.Shell = "/bin/bash" // Default assumption, will try to detect
+	s.Shell = "/bin/bash"
 	s.State = StateIdle
 	s.CreatedAt = time.Now()
 	s.LastUsed = time.Now()
-	s.Cwd = "~" // Will be updated on first command
-
-	// Wait for shell to be ready
-	time.Sleep(500 * time.Millisecond)
-
-	// Drain initial output
-	buf := make([]byte, 8192)
-	s.readWithTimeout(buf, 500*time.Millisecond)
-
-	// Try to detect remote shell
-	s.detectRemoteShell()
-
-	// Detect PTY name for control plane
-	s.detectPTYName()
-
-	// Set simple prompt based on detected shell
-	s.pty.WriteString(s.shellPromptCommand())
-	time.Sleep(200 * time.Millisecond)
-	s.readWithTimeout(buf, 300*time.Millisecond)
-
+	s.Cwd = "~"
 	return nil
 }
 
-// detectPTYName detects the PTY device name for SSH sessions.
-func (s *Session) detectPTYName() {
-	s.pty.WriteString("tty 2>/dev/null\n")
+// initializeSSHShell initializes the shell environment.
+func (s *Session) initializeSSHShell() {
+	time.Sleep(500 * time.Millisecond)
+	buf := make([]byte, 8192)
+	s.readWithTimeout(buf, 500*time.Millisecond)
+
+	s.detectRemoteShell()
+	s.captureEnvAndPTY()
+
+	s.pty.WriteString(s.shellPromptCommand())
+	time.Sleep(200 * time.Millisecond)
+	s.readWithTimeout(buf, 300*time.Millisecond)
+}
+
+// extractPTYNumber extracts the PTY number from an SSH_TTY path like "/dev/pts/5".
+func extractPTYNumber(sshTTY string) string {
+	sshTTY = strings.TrimSpace(strings.ReplaceAll(sshTTY, "\r", ""))
+	if !strings.HasPrefix(sshTTY, devPtsPrefix) {
+		return ""
+	}
+
+	ptyNum := strings.TrimPrefix(sshTTY, devPtsPrefix)
+	var cleanNum strings.Builder
+	for _, c := range ptyNum {
+		if c >= '0' && c <= '9' {
+			cleanNum.WriteRune(c)
+		} else {
+			break
+		}
+	}
+	return cleanNum.String()
+}
+
+// captureEnvAndPTY captures environment variables and extracts PTY name from SSH_TTY.
+func (s *Session) captureEnvAndPTY() {
+	s.pty.WriteString("env\n")
 	time.Sleep(100 * time.Millisecond)
 
-	buf := make([]byte, 1024)
-	n, _ := s.readWithTimeout(buf, 200*time.Millisecond)
-	if n > 0 {
-		output := string(buf[:n])
-		lines := strings.Split(output, "\n")
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "/dev/pts/") {
-				s.PTYName = strings.TrimPrefix(line, "/dev/pts/")
-				return
-			}
-		}
+	buf := make([]byte, 32768)
+	n, _ := s.readWithTimeout(buf, 500*time.Millisecond)
+	if n == 0 {
+		slog.Debug("failed to capture environment")
+		return
+	}
+
+	envMap := parseEnvOutput(string(buf[:n]))
+	if len(envMap) > 0 {
+		s.EnvVars = envMap
+	}
+
+	sshTTY, ok := s.EnvVars["SSH_TTY"]
+	if !ok {
+		slog.Debug("SSH_TTY not found in environment")
+		return
+	}
+
+	if ptyNum := extractPTYNumber(sshTTY); ptyNum != "" {
+		s.PTYName = ptyNum
+		slog.Debug("detected PTY name from SSH_TTY", slog.String("pty", s.PTYName))
 	}
 }
 
@@ -457,7 +516,43 @@ func (s *Session) Status() SessionStatus {
 		}
 	}
 
+	// Control plane info for debugging
+	status.PTYName = s.PTYName
+	status.HasControlSession = s.controlSession != nil
+
+	// Include saved tunnels if any (from before MCP restart)
+	if len(s.SavedTunnels) > 0 {
+		status.SavedTunnels = s.SavedTunnels
+	}
+
 	return status
+}
+
+// ControlExec executes a command via the control session (for debugging).
+// This runs the command on a separate PTY, not the main session PTY.
+func (s *Session) ControlExec(ctx context.Context, command string) (string, error) {
+	s.mu.Lock()
+	cs := s.controlSession
+	s.mu.Unlock()
+
+	if cs == nil {
+		return "", fmt.Errorf("control session not available")
+	}
+
+	return cs.Exec(ctx, command)
+}
+
+// ControlExecRaw executes a command via the control session and returns raw output.
+func (s *Session) ControlExecRaw(ctx context.Context, command string) (string, error) {
+	s.mu.Lock()
+	cs := s.controlSession
+	s.mu.Unlock()
+
+	if cs == nil {
+		return "", fmt.Errorf("control session not available")
+	}
+
+	return cs.ExecRaw(ctx, command)
 }
 
 // Exec executes a command in the session.
@@ -465,99 +560,181 @@ func (s *Session) Exec(command string, timeoutMs int) (*ExecResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.State == StateClosed {
-		return nil, fmt.Errorf("session is closed")
+	if err := s.validateExecPreconditions(); err != nil {
+		return nil, err
 	}
 
-	if s.pty == nil {
-		return nil, fmt.Errorf("session not initialized")
-	}
-
-	// For SSH sessions, check if we need to reconnect
-	if s.Mode == "ssh" && s.sshClient != nil && !s.sshClient.IsConnected() {
-		if err := s.reconnectSSH(); err != nil {
-			return nil, fmt.Errorf("reconnect failed: %w", err)
-		}
-	}
-
-	// Use control plane to verify PTY is alive (if available)
-	if s.controlSession != nil && s.PTYName != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		alive, err := s.controlSession.IsPTYAlive(ctx, s.PTYName)
-		cancel()
-		if err == nil && !alive {
-			slog.Warn("PTY has no processes, session is dead - attempting reconnect",
-				slog.String("session_id", s.ID),
-				slog.String("pty", s.PTYName),
-			)
-			if s.Mode == "ssh" {
-				if err := s.reconnectSSH(); err != nil {
-					return nil, fmt.Errorf("session dead and reconnect failed: %w", err)
-				}
-			} else {
-				return nil, fmt.Errorf("local session is dead (PTY has no processes)")
-			}
-		}
+	if err := s.ensureConnectionHealthy(); err != nil {
+		return nil, err
 	}
 
 	s.State = StateRunning
 	s.LastUsed = time.Now()
 	s.outputBuffer.Reset()
 
-	// Generate unique command ID for marker-based output isolation
 	cmdID := generateCommandID()
-	startMarker := startMarkerPrefix + cmdID + markerSuffix
-	endMarker := endMarkerPrefix + cmdID + markerSuffix
+	fullCommand := s.buildWrappedCommand(command, cmdID)
 
-	// Create command wrapped with start/end markers for output isolation
-	// Format: echo 'START'; command; echo 'END'$?
-	fullCommand := fmt.Sprintf("echo '%s'; %s; echo '%s'$?\n", startMarker, command, endMarker)
-
-	// Write command to PTY
-	if _, err := s.pty.WriteString(fullCommand); err != nil {
-		// Check if this is a broken connection (EOF, closed pipe, etc.)
-		if isConnectionBroken(err) && s.Mode == "ssh" {
-			slog.Warn("SSH connection broken, attempting reconnect",
-				slog.String("session_id", s.ID),
-				slog.String("error", err.Error()),
-			)
-			if reconnErr := s.reconnectSSH(); reconnErr != nil {
-				s.State = StateIdle
-				return nil, fmt.Errorf("connection lost and reconnect failed: %w (original: %v)", reconnErr, err)
-			}
-			// Retry the write after reconnect
-			if _, err := s.pty.WriteString(fullCommand); err != nil {
-				s.State = StateIdle
-				return nil, fmt.Errorf("write command after reconnect: %w", err)
-			}
-		} else {
-			s.State = StateIdle
-			return nil, fmt.Errorf("write command: %w", err)
-		}
+	if err := s.writeCommandWithReconnect(fullCommand); err != nil {
+		return nil, err
 	}
 
-	// For multi-line commands, give bash time to process all lines
-	// before we start reading output. Each embedded newline causes bash
-	// to show a continuation prompt (PS2) while processing.
-	if strings.Contains(command, "\n") {
-		lineCount := strings.Count(command, "\n")
-		delay := time.Duration(lineCount*50) * time.Millisecond
-		if delay > 500*time.Millisecond {
-			delay = 500 * time.Millisecond
-		}
-		time.Sleep(delay)
-	}
+	applyMultilineDelay(command)
 
-	// Read output with timeout
-	timeout := time.Duration(timeoutMs) * time.Millisecond
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
-
+	timeout := s.getTimeout(timeoutMs)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	return s.readOutputWithMarkers(ctx, command, cmdID)
+}
+
+// validateExecPreconditions checks if session is ready for command execution.
+func (s *Session) validateExecPreconditions() error {
+	if s.State == StateClosed {
+		return fmt.Errorf("session is closed")
+	}
+	if s.pty == nil {
+		return fmt.Errorf(errSessionNotInitialized)
+	}
+	return nil
+}
+
+// ensureConnectionHealthy checks and restores connection if needed.
+func (s *Session) ensureConnectionHealthy() error {
+	if err := s.checkSSHConnection(); err != nil {
+		return err
+	}
+	return s.checkPTYAlive()
+}
+
+// checkSSHConnection reconnects SSH if disconnected.
+func (s *Session) checkSSHConnection() error {
+	if s.Mode != "ssh" || s.sshClient == nil || s.sshClient.IsConnected() {
+		return nil
+	}
+	if err := s.reconnectSSH(); err != nil {
+		return fmt.Errorf("reconnect failed: %w", err)
+	}
+	return nil
+}
+
+// checkPTYAlive uses control plane to verify PTY health.
+func (s *Session) checkPTYAlive() error {
+	if s.controlSession == nil || s.PTYName == "" {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	alive, err := s.controlSession.IsPTYAlive(ctx, s.PTYName)
+	cancel()
+
+	if err != nil || alive {
+		return nil
+	}
+
+	slog.Warn("PTY has no processes, session is dead - attempting reconnect",
+		slog.String("session_id", s.ID),
+		slog.String("pty", s.PTYName),
+	)
+
+	if s.Mode == "ssh" {
+		if err := s.reconnectSSH(); err != nil {
+			return fmt.Errorf("session dead and reconnect failed: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("local session is dead (PTY has no processes)")
+}
+
+// buildWrappedCommand creates the full command with markers.
+func (s *Session) buildWrappedCommand(command, cmdID string) string {
+	startMarker := startMarkerPrefix + cmdID + markerSuffix
+	endMarker := endMarkerPrefix + cmdID + markerSuffix
+	escapedCommand := strings.ReplaceAll(command, "'", "'\\''")
+	return fmt.Sprintf("echo '%s'; bash -c 'trap \"\" SIGTTOU; %s'; echo '%s'$?\n", startMarker, escapedCommand, endMarker)
+}
+
+// writeCommandWithReconnect writes command to PTY, reconnecting if needed.
+func (s *Session) writeCommandWithReconnect(fullCommand string) error {
+	_, err := s.pty.WriteString(fullCommand)
+	if err == nil {
+		return nil
+	}
+
+	if !isConnectionBroken(err) || s.Mode != "ssh" {
+		s.State = StateIdle
+		return fmt.Errorf("write command: %w", err)
+	}
+
+	slog.Warn("SSH connection broken, attempting reconnect",
+		slog.String("session_id", s.ID),
+		slog.String("error", err.Error()),
+	)
+
+	if reconnErr := s.reconnectSSH(); reconnErr != nil {
+		s.State = StateIdle
+		return fmt.Errorf(errConnectionLostFmt, reconnErr, err)
+	}
+
+	if _, err := s.pty.WriteString(fullCommand); err != nil {
+		s.State = StateIdle
+		return fmt.Errorf("write command after reconnect: %w", err)
+	}
+	return nil
+}
+
+// applyMultilineDelay adds delay for multi-line commands.
+func applyMultilineDelay(command string) {
+	if !strings.Contains(command, "\n") {
+		return
+	}
+	lineCount := strings.Count(command, "\n")
+	delay := time.Duration(lineCount*50) * time.Millisecond
+	if delay > 500*time.Millisecond {
+		delay = 500 * time.Millisecond
+	}
+	time.Sleep(delay)
+}
+
+// getTimeout returns the command timeout duration.
+func (s *Session) getTimeout(timeoutMs int) time.Duration {
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+	return timeout
+}
+
+// processLegacyRead performs a single read iteration for legacy output reading.
+// Returns (result, newStallCount, error) where error is fatal.
+func (s *Session) processLegacyRead(ctx context.Context, buf []byte, command string, stallCount, stallThreshold int) (*ExecResult, int, error) {
+	if result := s.handleLegacyContextTimeout(ctx, command); result != nil {
+		return result, stallCount, nil
+	}
+
+	s.pty.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+
+	n, err := s.pty.Read(buf)
+	if err != nil {
+		result, newStall, cont := s.handleLegacyReadError(err, command, stallCount, stallThreshold)
+		if result != nil {
+			return result, newStall, nil
+		}
+		if cont {
+			return nil, newStall, nil
+		}
+		s.State = StateIdle
+		return nil, newStall, fmt.Errorf("read output: %w", err)
+	}
+
+	if n > 0 {
+		s.outputBuffer.Write(buf[:n])
+		if result := s.checkLegacyOutputForResult(command); result != nil {
+			return result, 0, nil
+		}
+		return nil, 0, nil
+	}
+	return nil, stallCount, nil
 }
 
 // readOutput reads output from PTY until completion or prompt detection.
@@ -565,277 +742,260 @@ func (s *Session) Exec(command string, timeoutMs int) (*ExecResult, error) {
 func (s *Session) readOutput(ctx context.Context, command string) (*ExecResult, error) {
 	buf := make([]byte, 4096)
 	stallCount := 0
-	const stallThreshold = 15 // 15 x 100ms = 1.5 seconds of no output
+	const stallThreshold = 15
 
 	for {
-		select {
-		case <-ctx.Done():
-			// Aggressively kill the running command
-			s.forceKillCommand()
-			s.State = StateIdle
-			return &ExecResult{
-				Status: "timeout",
-				Stdout: s.cleanOutput(s.outputBuffer.String(), command),
-			}, nil
-		default:
+		result, newStall, err := s.processLegacyRead(ctx, buf, command, stallCount, stallThreshold)
+		stallCount = newStall
+		if result != nil {
+			return result, nil
 		}
-
-		// Set short read deadline for non-blocking reads
-		s.pty.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-
-		n, err := s.pty.Read(buf)
 		if err != nil {
-			if os.IsTimeout(err) || err == io.EOF || isTimeoutError(err) {
-				// Check if we have an end marker
-				output := s.outputBuffer.String()
-				if exitCode, found := s.extractExitCode(output); found {
-					s.State = StateIdle
-					s.updateCwd()
-					return &ExecResult{
-						Status:   "completed",
-						ExitCode: &exitCode,
-						Stdout:   s.cleanOutput(output, command),
-						Cwd:      s.Cwd,
-					}, nil
-				}
-
-				// Increment stall counter when no data received
-				stallCount++
-
-				// After stall threshold, check if there's meaningful output beyond command echo
-				// This detects interactive apps like vim that produce output then wait
-				if stallCount >= stallThreshold {
-					cleanedStdout := s.cleanOutput(output, command)
-					// Only trigger awaiting_input if there's actual output (not just command echo)
-					if len(strings.TrimSpace(cleanedStdout)) > 0 {
-						// Check if this looks like a shell continuation prompt (PS2)
-						// This happens with multi-line commands - don't treat as interactive
-						if isContinuationPrompt(output) && strings.Contains(command, "\n") {
-							// Multi-line command still processing, wait longer
-							stallCount = stallThreshold / 2 // Reset partially to give more time
-							continue
-						}
-
-						// Check for interactive prompt patterns with ANSI stripped
-						strippedOutput := stripANSI(output)
-						if detection := s.promptDetector.Detect(strippedOutput); detection != nil {
-							s.State = StateAwaitingInput
-							s.pendingPrompt = detection
-							return &ExecResult{
-								Status:        "awaiting_input",
-								Stdout:        cleanedStdout,
-								PromptType:    string(detection.Pattern.Type),
-								PromptText:    detection.MatchedText,
-								ContextBuffer: detection.ContextBuffer,
-								MaskInput:     detection.Pattern.MaskInput,
-								Hint:          detection.Hint(),
-							}, nil
-						}
-
-						// If output exists but no pattern matched, treat as stalled interactive
-						s.State = StateAwaitingInput
-						return &ExecResult{
-							Status:        "awaiting_input",
-							Stdout:        cleanedStdout,
-							PromptType:    "interactive",
-							PromptText:    "",
-							ContextBuffer: output,
-							Hint:          "Command appears to be waiting for input. Send input or interrupt with shell_interrupt.",
-						}, nil
-					}
-				}
-
-				continue
-			}
-			s.State = StateIdle
-			return nil, fmt.Errorf("read output: %w", err)
-		}
-
-		if n > 0 {
-			// Reset stall counter when we receive data
-			stallCount = 0
-			s.outputBuffer.Write(buf[:n])
-			output := s.outputBuffer.String()
-
-			// Check for command completion
-			if exitCode, found := s.extractExitCode(output); found {
-				s.State = StateIdle
-				s.updateCwd()
-				return &ExecResult{
-					Status:   "completed",
-					ExitCode: &exitCode,
-					Stdout:   s.cleanOutput(output, command),
-					Cwd:      s.Cwd,
-				}, nil
-			}
-
-			// Check for interactive prompt
-			if detection := s.promptDetector.Detect(output); detection != nil {
-				s.State = StateAwaitingInput
-				s.pendingPrompt = detection
-				return &ExecResult{
-					Status:        "awaiting_input",
-					Stdout:        s.cleanOutput(output, command),
-					PromptType:    string(detection.Pattern.Type),
-					PromptText:    detection.MatchedText,
-					ContextBuffer: detection.ContextBuffer,
-					MaskInput:     detection.Pattern.MaskInput,
-					Hint:          detection.Hint(),
-				}, nil
-			}
+			return nil, err
 		}
 	}
+}
+
+// handleLegacyContextTimeout handles timeout for legacy output reading.
+func (s *Session) handleLegacyContextTimeout(ctx context.Context, command string) *ExecResult {
+	select {
+	case <-ctx.Done():
+		s.forceKillCommand()
+		s.State = StateIdle
+		return &ExecResult{
+			Status: "timeout",
+			Stdout: s.cleanOutput(s.outputBuffer.String(), command),
+		}
+	default:
+		return nil
+	}
+}
+
+// handleLegacyReadError processes read errors for legacy output.
+func (s *Session) handleLegacyReadError(err error, command string, stallCount, stallThreshold int) (*ExecResult, int, bool) {
+	if !os.IsTimeout(err) && err != io.EOF && !isTimeoutError(err) {
+		return nil, stallCount, false
+	}
+
+	output := s.outputBuffer.String()
+	if result := s.checkLegacyCompletion(output, command); result != nil {
+		return result, stallCount, false
+	}
+
+	stallCount++
+
+	if stallCount >= stallThreshold {
+		if result := s.checkLegacyStallSignals(output, command); result != nil {
+			return result, stallCount, false
+		}
+		stallCount = stallThreshold / 2
+	}
+
+	return nil, stallCount, true
+}
+
+// checkLegacyCompletion checks for command completion using legacy markers.
+func (s *Session) checkLegacyCompletion(output, command string) *ExecResult {
+	exitCode, found := s.extractExitCode(output)
+	if !found {
+		return nil
+	}
+	s.State = StateIdle
+	s.updateCwd()
+	return &ExecResult{
+		Status:   "completed",
+		ExitCode: &exitCode,
+		Stdout:   s.cleanOutput(output, command),
+		Cwd:      s.Cwd,
+	}
+}
+
+// checkLegacyStallSignals checks for input signals after stall threshold.
+func (s *Session) checkLegacyStallSignals(output, command string) *ExecResult {
+	cleanedStdout := s.cleanOutput(output, command)
+	strippedOutput := stripANSI(output)
+
+	// Check peak-tty signal
+	if containsPeakTTYSignal(output) {
+		slog.Debug("peak-tty signal detected (13 NUL bytes)")
+		s.State = StateAwaitingInput
+		return &ExecResult{
+			Status:        "awaiting_input",
+			Stdout:        strings.ReplaceAll(cleanedStdout, "\x00", ""),
+			PromptType:    "interactive",
+			PromptText:    "",
+			ContextBuffer: stripANSI(strings.ReplaceAll(output, "\x00", "")),
+			Hint:          hintPeakTTYWaiting,
+		}
+	}
+
+	// Check password prompt
+	detection := s.promptDetector.Detect(strippedOutput)
+	if detection != nil && detection.Pattern.Type == "password" {
+		s.State = StateAwaitingInput
+		s.pendingPrompt = detection
+		return &ExecResult{
+			Status:        "awaiting_input",
+			Stdout:        cleanedStdout,
+			PromptType:    string(detection.Pattern.Type),
+			PromptText:    detection.MatchedText,
+			ContextBuffer: detection.ContextBuffer,
+			MaskInput:     detection.Pattern.MaskInput,
+			Hint:          detection.Hint(),
+		}
+	}
+
+	return nil
+}
+
+// checkLegacyOutputForResult checks output for completion or prompts.
+func (s *Session) checkLegacyOutputForResult(command string) *ExecResult {
+	output := s.outputBuffer.String()
+
+	if result := s.checkLegacyCompletion(output, command); result != nil {
+		return result
+	}
+
+	detection := s.promptDetector.Detect(output)
+	if detection == nil {
+		return nil
+	}
+
+	s.State = StateAwaitingInput
+	s.pendingPrompt = detection
+	return &ExecResult{
+		Status:        "awaiting_input",
+		Stdout:        s.cleanOutput(output, command),
+		PromptType:    string(detection.Pattern.Type),
+		PromptText:    detection.MatchedText,
+		ContextBuffer: detection.ContextBuffer,
+		MaskInput:     detection.Pattern.MaskInput,
+		Hint:          detection.Hint(),
+	}
+}
+
+// processMarkedRead performs a single read iteration for marker-based output reading.
+// Returns (result, newStallCount, error) where error is fatal.
+func (s *Session) processMarkedRead(ctx context.Context, buf []byte, execCtx *execContext, stallCount, stallThreshold int) (*ExecResult, int, error) {
+	if result := s.handleContextTimeout(ctx, execCtx); result != nil {
+		return result, stallCount, nil
+	}
+
+	s.pty.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+
+	n, err := s.pty.Read(buf)
+	if err != nil {
+		result, newStall, cont := s.handleReadError(err, execCtx, stallCount, stallThreshold)
+		if result != nil {
+			return result, newStall, nil
+		}
+		if cont {
+			return nil, newStall, nil
+		}
+		s.State = StateIdle
+		return nil, newStall, fmt.Errorf("read output: %w", err)
+	}
+
+	if n > 0 {
+		s.outputBuffer.Write(buf[:n])
+		if result := s.checkOutputForResult(execCtx); result != nil {
+			return result, 0, nil
+		}
+		return nil, 0, nil
+	}
+	return nil, stallCount, nil
 }
 
 // readOutputWithMarkers reads output using command markers for isolation.
 // Output before the start marker is captured as async_output (background noise).
 // Output between start and end markers is the actual command output.
 func (s *Session) readOutputWithMarkers(ctx context.Context, command string, cmdID string) (*ExecResult, error) {
+	execCtx := newExecContext(cmdID, startMarkerPrefix+cmdID+markerSuffix, endMarkerPrefix+cmdID+markerSuffix, command)
 	buf := make([]byte, 4096)
 	stallCount := 0
-	const stallThreshold = 15 // 15 x 100ms = 1.5 seconds of no output
-
-	startMarker := startMarkerPrefix + cmdID + markerSuffix
-	endMarker := endMarkerPrefix + cmdID + markerSuffix
+	const stallThreshold = 15
 
 	for {
-		select {
-		case <-ctx.Done():
-			// Aggressively kill the running command
-			s.forceKillCommand()
-			s.State = StateIdle
-			asyncOutput, stdout := s.parseMarkedOutput(s.outputBuffer.String(), startMarker, endMarker, command)
-			return &ExecResult{
-				Status:      "timeout",
-				Stdout:      stdout,
-				AsyncOutput: asyncOutput,
-				CommandID:   cmdID,
-			}, nil
-		default:
+		result, newStall, err := s.processMarkedRead(ctx, buf, execCtx, stallCount, stallThreshold)
+		stallCount = newStall
+		if result != nil {
+			return result, nil
 		}
-
-		// Set short read deadline for non-blocking reads
-		s.pty.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-
-		n, err := s.pty.Read(buf)
 		if err != nil {
-			if os.IsTimeout(err) || err == io.EOF || isTimeoutError(err) {
-				// Check if we have an end marker
-				output := s.outputBuffer.String()
-				if exitCode, found := s.extractExitCodeWithMarker(output, endMarker); found {
-					s.State = StateIdle
-					s.updateCwd()
-					asyncOutput, stdout := s.parseMarkedOutput(output, startMarker, endMarker, command)
-					return &ExecResult{
-						Status:      "completed",
-						ExitCode:    &exitCode,
-						Stdout:      stdout,
-						AsyncOutput: asyncOutput,
-						CommandID:   cmdID,
-						Cwd:         s.Cwd,
-					}, nil
-				}
-
-				// Increment stall counter when no data received
-				stallCount++
-
-				// After stall threshold, check if there's meaningful output
-				if stallCount >= stallThreshold {
-					asyncOutput, stdout := s.parseMarkedOutput(output, startMarker, endMarker, command)
-
-					// Check for interactive prompt patterns first (password, confirmation, etc.)
-					strippedOutput := stripANSI(output)
-					if detection := s.promptDetector.Detect(strippedOutput); detection != nil {
-						s.State = StateAwaitingInput
-						s.pendingPrompt = detection
-						return &ExecResult{
-							Status:        "awaiting_input",
-							Stdout:        stdout,
-							AsyncOutput:   asyncOutput,
-							CommandID:     cmdID,
-							PromptType:    string(detection.Pattern.Type),
-							PromptText:    detection.MatchedText,
-							ContextBuffer: detection.ContextBuffer,
-							MaskInput:     detection.Pattern.MaskInput,
-							Hint:          detection.Hint(),
-						}, nil
-					}
-
-					// Only trigger generic "awaiting_input" if there's actual command output (stdout)
-					// Don't trigger just because async_output has the command echo - that's normal
-					// Commands like tar run silently and produce no output until completion
-					if len(strings.TrimSpace(stdout)) > 0 {
-						// Check if this looks like a shell continuation prompt (PS2)
-						if isContinuationPrompt(output) && strings.Contains(command, "\n") {
-							stallCount = stallThreshold / 2
-							continue
-						}
-
-						// If stdout exists but no prompt pattern matched, treat as stalled interactive
-						s.State = StateAwaitingInput
-						return &ExecResult{
-							Status:        "awaiting_input",
-							Stdout:        stdout,
-							AsyncOutput:   asyncOutput,
-							CommandID:     cmdID,
-							PromptType:    "interactive",
-							PromptText:    "",
-							ContextBuffer: output,
-							Hint:          "Command appears to be waiting for input. Send input or interrupt with shell_interrupt.",
-						}, nil
-					}
-
-					// No stdout yet - command is probably still running silently (like tar, cp, etc.)
-					// Reset stall counter and keep waiting
-					stallCount = 0
-				}
-
-				continue
-			}
-			s.State = StateIdle
-			return nil, fmt.Errorf("read output: %w", err)
-		}
-
-		if n > 0 {
-			// Reset stall counter when we receive data
-			stallCount = 0
-			s.outputBuffer.Write(buf[:n])
-			output := s.outputBuffer.String()
-
-			// Check for command completion (end marker present)
-			if exitCode, found := s.extractExitCodeWithMarker(output, endMarker); found {
-				s.State = StateIdle
-				s.updateCwd()
-				asyncOutput, stdout := s.parseMarkedOutput(output, startMarker, endMarker, command)
-				return &ExecResult{
-					Status:      "completed",
-					ExitCode:    &exitCode,
-					Stdout:      stdout,
-					AsyncOutput: asyncOutput,
-					CommandID:   cmdID,
-					Cwd:         s.Cwd,
-				}, nil
-			}
-
-			// Check for interactive prompt
-			if detection := s.promptDetector.Detect(output); detection != nil {
-				s.State = StateAwaitingInput
-				s.pendingPrompt = detection
-				asyncOutput, stdout := s.parseMarkedOutput(output, startMarker, endMarker, command)
-				return &ExecResult{
-					Status:        "awaiting_input",
-					Stdout:        stdout,
-					AsyncOutput:   asyncOutput,
-					CommandID:     cmdID,
-					PromptType:    string(detection.Pattern.Type),
-					PromptText:    detection.MatchedText,
-					ContextBuffer: detection.ContextBuffer,
-					MaskInput:     detection.Pattern.MaskInput,
-					Hint:          detection.Hint(),
-				}, nil
-			}
+			return nil, err
 		}
 	}
+}
+
+// handleContextTimeout checks for context cancellation and returns timeout result.
+func (s *Session) handleContextTimeout(ctx context.Context, execCtx *execContext) *ExecResult {
+	select {
+	case <-ctx.Done():
+		s.forceKillCommand()
+		s.State = StateIdle
+		return s.buildTimeoutResult(execCtx)
+	default:
+		return nil
+	}
+}
+
+// handleReadError processes read errors and returns result if command completed.
+// Returns: (result, newStallCount, shouldContinue)
+func (s *Session) handleReadError(err error, execCtx *execContext, stallCount, stallThreshold int) (*ExecResult, int, bool) {
+	if !os.IsTimeout(err) && err != io.EOF && !isTimeoutError(err) {
+		return nil, stallCount, false
+	}
+
+	// Check for completion
+	if result, found := s.checkForCompletion(execCtx); found {
+		return result, stallCount, false
+	}
+
+	stallCount++
+
+	// After stall threshold, check for prompts
+	if stallCount >= stallThreshold {
+		strippedOutput := stripANSI(s.outputBuffer.String())
+
+		// Check for peak-tty signal first
+		if result, found := s.checkForPeakTTYSignal(execCtx); found {
+			slog.Debug("peak-tty signal detected (13 NUL bytes)")
+			return result, stallCount, false
+		}
+
+		// Check for password prompt
+		if result, found := s.checkForPasswordPrompt(execCtx, strippedOutput); found {
+			slog.Debug("password prompt detected via pattern")
+			return result, stallCount, false
+		}
+
+		// No signals detected - partially reset stall counter
+		stallCount = stallThreshold / 2
+	}
+
+	return nil, stallCount, true
+}
+
+// checkOutputForResult checks the output buffer for completion or prompts.
+func (s *Session) checkOutputForResult(execCtx *execContext) *ExecResult {
+	// Check for completion
+	if result, found := s.checkForCompletion(execCtx); found {
+		return result
+	}
+
+	// Check for peak-tty signal
+	if result, found := s.checkForPeakTTYSignal(execCtx); found {
+		slog.Debug("peak-tty signal detected immediately")
+		return result
+	}
+
+	// Check for interactive prompt
+	output := s.outputBuffer.String()
+	if result, found := s.checkForInteractivePrompt(execCtx, output); found {
+		return result
+	}
+
+	return nil
 }
 
 // parseMarkedOutput separates async output from command output using markers.
@@ -948,8 +1108,11 @@ func (s *Session) extractExitCodeWithMarker(output, endMarker string) (int, bool
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, endMarker) {
-			rest := strings.TrimPrefix(line, endMarker)
+		// Check if the line contains the end marker (not just starts with it)
+		// Commands like curl may output without a trailing newline, so the marker
+		// can appear in the middle of a line: "000___CMD_END_xxx___7"
+		if idx := strings.Index(line, endMarker); idx != -1 {
+			rest := line[idx+len(endMarker):]
 			var exitCode int
 			if _, err := fmt.Sscanf(rest, "%d", &exitCode); err == nil {
 				return exitCode, true
@@ -960,19 +1123,22 @@ func (s *Session) extractExitCodeWithMarker(output, endMarker string) (int, bool
 	return 0, false
 }
 
+// peakTTYSignal is 13 consecutive NUL bytes injected by peak-tty daemon
+// when a process is blocked on n_tty_read (waiting for TTY input).
+const peakTTYSignal = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+
+// containsPeakTTYSignal checks if the output contains the peak-tty signal.
+// peak-tty is an eBPF-based daemon that injects 13 NUL bytes to the TTY
+// when it detects a process blocked on n_tty_read.
+func containsPeakTTYSignal(s string) bool {
+	return strings.Contains(s, peakTTYSignal)
+}
+
 // stripANSI removes ANSI escape sequences from a string.
 func stripANSI(s string) string {
 	// Match ANSI escape sequences: ESC[ followed by parameters and a letter
 	ansiRegex := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-Za-z]`)
 	return ansiRegex.ReplaceAllString(s, "")
-}
-
-// isContinuationPrompt checks if output ends with a shell continuation prompt (PS2).
-// This is typically "> " shown when a command spans multiple lines.
-func isContinuationPrompt(output string) bool {
-	output = strings.TrimRight(output, "\r\n")
-	// Common PS2 patterns: "> " or just ">"
-	return strings.HasSuffix(output, "> ") || strings.HasSuffix(output, ">")
 }
 
 // drainOutput drains any remaining output from the PTY after an interrupt or timeout.
@@ -1101,54 +1267,131 @@ func (s *Session) ProvideInput(input string) (*ExecResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.State != StateAwaitingInput {
-		return nil, fmt.Errorf("session is not awaiting input (state: %s)", s.State)
-	}
-
-	if s.pty == nil {
-		return nil, fmt.Errorf("session not initialized")
+	if err := s.validateAwaitingInputState(); err != nil {
+		return nil, err
 	}
 
 	s.State = StateRunning
 	s.LastUsed = time.Now()
 
-	// For password prompts, wait until the program has disabled echo on the terminal
-	// (sudo disables echo AFTER printing the prompt - we must wait for it)
+	s.prepareForPasswordInput()
+
+	toWrite := input + "\n"
+	if err := s.writeInputToPTY(toWrite); err != nil {
+		return nil, err
+	}
+
+	s.outputBuffer.Reset()
+	s.pendingPrompt = nil
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return s.readOutput(ctx, "")
+}
+
+// validateAwaitingInputState checks if session is ready for input.
+func (s *Session) validateAwaitingInputState() error {
+	if s.State != StateAwaitingInput {
+		return fmt.Errorf("session is not awaiting input (state: %s)", s.State)
+	}
+	if s.pty == nil {
+		return fmt.Errorf(errSessionNotInitialized)
+	}
+	return nil
+}
+
+// prepareForPasswordInput waits for echo to be disabled for password prompts.
+func (s *Session) prepareForPasswordInput() {
 	isPasswordPrompt := s.pendingPrompt != nil && s.pendingPrompt.Pattern.MaskInput
 	if isPasswordPrompt {
 		slog.Debug("waiting for echo disabled before password input")
 		s.waitForEchoDisabled()
 	}
+}
 
-	// Write input followed by newline
-	lineEnding := "\n"
-	toWrite := input + lineEnding
+// writeInputToPTY writes input and handles connection errors.
+func (s *Session) writeInputToPTY(toWrite string) error {
+	_, err := s.pty.WriteString(toWrite)
+	if err == nil {
+		return nil
+	}
 
-	slog.Debug("writing input to PTY",
-		"len", len(toWrite),
-		"isPassword", isPasswordPrompt,
-		"bytes", fmt.Sprintf("%v", []byte(toWrite)))
+	slog.Error("failed to write input", "error", err)
 
-	n, err := s.pty.WriteString(toWrite)
+	if isConnectionBroken(err) && s.Mode == "ssh" {
+		return s.handleInputConnectionError(err)
+	}
+
+	s.State = StateAwaitingInput
+	return fmt.Errorf("write input: %w", err)
+}
+
+// handleInputConnectionError handles broken connection during input.
+func (s *Session) handleInputConnectionError(originalErr error) error {
+	slog.Warn("SSH connection broken during input, attempting reconnect",
+		slog.String("session_id", s.ID),
+	)
+	s.State = StateIdle
+	if reconnErr := s.reconnectSSH(); reconnErr != nil {
+		return fmt.Errorf(errConnectionLostFmt, reconnErr, originalErr)
+	}
+	return fmt.Errorf("connection was lost (reconnected - please retry command)")
+}
+
+// SendRaw sends raw bytes to the PTY without any processing.
+// This is a low-level tool for sending control characters, escape sequences, or
+// binary data that shell_provide_input cannot handle.
+//
+// The input string can contain escape sequences that will be interpreted:
+//   - \x04 or \004 = EOF (Ctrl+D)
+//   - \x03 or \003 = Interrupt (Ctrl+C)
+//   - \x1b or \033 = Escape
+//   - \n = newline, \r = carriage return, \t = tab
+//   - \\ = literal backslash
+//
+// No newline is automatically appended - you must include it if needed.
+func (s *Session) SendRaw(input string) (*ExecResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.State != StateAwaitingInput {
+		return nil, fmt.Errorf("session is not awaiting input (state: %s)", s.State)
+	}
+
+	if s.pty == nil {
+		return nil, fmt.Errorf(errSessionNotInitialized)
+	}
+
+	s.State = StateRunning
+	s.LastUsed = time.Now()
+
+	// Interpret escape sequences in the input
+	rawBytes := interpretEscapeSequences(input)
+
+	slog.Debug("sending raw bytes to PTY",
+		"len", len(rawBytes),
+		"bytes", fmt.Sprintf("%v", rawBytes))
+
+	n, err := s.pty.Write(rawBytes)
 	if err != nil {
-		slog.Error("failed to write input", "error", err)
-		// Check if connection is broken and attempt reconnect for SSH
+		slog.Error("failed to write raw input", "error", err)
 		if isConnectionBroken(err) && s.Mode == "ssh" {
-			slog.Warn("SSH connection broken during input, attempting reconnect",
+			slog.Warn("SSH connection broken during raw input, attempting reconnect",
 				slog.String("session_id", s.ID),
 			)
-			s.State = StateIdle // Reset state before reconnect
+			s.State = StateIdle
 			if reconnErr := s.reconnectSSH(); reconnErr != nil {
-				return nil, fmt.Errorf("connection lost and reconnect failed: %w (original: %v)", reconnErr, err)
+				return nil, fmt.Errorf(errConnectionLostFmt, reconnErr, err)
 			}
-			return nil, fmt.Errorf("connection was lost (reconnected - please retry command)")
+			return nil, fmt.Errorf("connection was lost (reconnected - please retry)")
 		}
 		s.State = StateAwaitingInput
-		return nil, fmt.Errorf("write input: %w", err)
+		return nil, fmt.Errorf("write raw input: %w", err)
 	}
-	slog.Debug("wrote input to PTY", "bytesWritten", n)
+	slog.Debug("wrote raw bytes to PTY", "bytesWritten", n)
 
-	// Clear output buffer to avoid re-detecting the old prompt
+	// Clear output buffer
 	s.outputBuffer.Reset()
 	s.pendingPrompt = nil
 
@@ -1157,6 +1400,125 @@ func (s *Session) ProvideInput(input string) (*ExecResult, error) {
 	defer cancel()
 
 	return s.readOutput(ctx, "")
+}
+
+// simpleEscapes maps single-character escape sequences to their byte values.
+var simpleEscapes = map[byte]byte{
+	'n':  '\n',
+	'r':  '\r',
+	't':  '\t',
+	'\\': '\\',
+	'e':  0x1b,
+}
+
+// tryParseHexEscape attempts to parse a hex escape like \xNN.
+func tryParseHexEscape(s string, i int) (byte, int, bool) {
+	if i+3 >= len(s) {
+		return 0, 0, false
+	}
+	b, ok := parseHexByte(s[i+2 : i+4])
+	if !ok {
+		return 0, 0, false
+	}
+	return b, 4, true
+}
+
+// tryParseOctalEscape attempts to parse an octal escape like \NNN.
+func tryParseOctalEscape(s string, i int) (byte, int, bool) {
+	if i+3 >= len(s) {
+		return 0, 0, false
+	}
+	b, ok := parseOctalByte(s[i+1 : i+4])
+	if !ok {
+		return 0, 0, false
+	}
+	return b, 4, true
+}
+
+// tryParseEscape attempts to parse an escape sequence at position i.
+// Returns (byte, skipCount, true) if successful, or (0, 0, false) if not an escape.
+func tryParseEscape(s string, i int) (byte, int, bool) {
+	if i+1 >= len(s) {
+		return 0, 0, false
+	}
+
+	next := s[i+1]
+
+	if b, ok := simpleEscapes[next]; ok {
+		return b, 2, true
+	}
+
+	if next == 'x' || next == 'X' {
+		if b, skip, ok := tryParseHexEscape(s, i); ok {
+			return b, skip, true
+		}
+	}
+
+	if next >= '0' && next <= '3' {
+		if b, skip, ok := tryParseOctalEscape(s, i); ok {
+			return b, skip, true
+		}
+	}
+
+	return 0, 0, false
+}
+
+// interpretEscapeSequences converts escape sequences in a string to actual bytes.
+// Supports: \xNN (hex), \NNN (octal), \n, \r, \t, \\, and common control chars.
+func interpretEscapeSequences(s string) []byte {
+	var result []byte
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' {
+			result = append(result, s[i])
+			continue
+		}
+
+		if b, skip, ok := tryParseEscape(s, i); ok {
+			result = append(result, b)
+			i += skip - 1
+			continue
+		}
+
+		result = append(result, s[i])
+	}
+	return result
+}
+
+// parseHexByte parses a 2-character hex string into a byte.
+func parseHexByte(s string) (byte, bool) {
+	if len(s) != 2 {
+		return 0, false
+	}
+	var b byte
+	for _, c := range s {
+		b <<= 4
+		switch {
+		case c >= '0' && c <= '9':
+			b |= byte(c - '0')
+		case c >= 'a' && c <= 'f':
+			b |= byte(c - 'a' + 10)
+		case c >= 'A' && c <= 'F':
+			b |= byte(c - 'A' + 10)
+		default:
+			return 0, false
+		}
+	}
+	return b, true
+}
+
+// parseOctalByte parses a 3-character octal string into a byte.
+func parseOctalByte(s string) (byte, bool) {
+	if len(s) != 3 {
+		return 0, false
+	}
+	var b byte
+	for _, c := range s {
+		if c < '0' || c > '7' {
+			return 0, false
+		}
+		b = b*8 + byte(c-'0')
+	}
+	return b, true
 }
 
 // waitForEchoDisabled waits for the terminal to be ready for password input.
@@ -1178,7 +1540,7 @@ func (s *Session) Interrupt() error {
 	}
 
 	if s.pty == nil {
-		return fmt.Errorf("session not initialized")
+		return fmt.Errorf(errSessionNotInitialized)
 	}
 
 	if err := s.pty.Interrupt(); err != nil {
@@ -1493,21 +1855,24 @@ type ShellInfo struct {
 
 // SessionStatus represents the status of a session.
 type SessionStatus struct {
-	ID             string            `json:"session_id"`
-	State          State             `json:"state"`
-	Mode           string            `json:"mode"`
-	Shell          string            `json:"shell"`
-	ShellInfo      *ShellInfo        `json:"shell_info,omitempty"`
-	Cwd            string            `json:"cwd"`
-	IdleSeconds    int               `json:"idle_seconds"`
-	UptimeSeconds  int               `json:"uptime_seconds"`
-	EnvVars        map[string]string `json:"env_vars,omitempty"`
-	Aliases        map[string]string `json:"aliases,omitempty"`
-	Host           string            `json:"host,omitempty"`
-	User           string            `json:"user,omitempty"`
-	Connected      bool              `json:"connected"`
-	SudoCached     bool              `json:"sudo_cached,omitempty"`
-	SudoExpiresIn  int               `json:"sudo_expires_in_seconds,omitempty"`
+	ID                string            `json:"session_id"`
+	State             State             `json:"state"`
+	Mode              string            `json:"mode"`
+	Shell             string            `json:"shell"`
+	ShellInfo         *ShellInfo        `json:"shell_info,omitempty"`
+	Cwd               string            `json:"cwd"`
+	IdleSeconds       int               `json:"idle_seconds"`
+	UptimeSeconds     int               `json:"uptime_seconds"`
+	EnvVars           map[string]string `json:"env_vars,omitempty"`
+	Aliases           map[string]string `json:"aliases,omitempty"`
+	Host              string            `json:"host,omitempty"`
+	User              string            `json:"user,omitempty"`
+	Connected         bool              `json:"connected"`
+	SudoCached        bool              `json:"sudo_cached,omitempty"`
+	SudoExpiresIn     int               `json:"sudo_expires_in_seconds,omitempty"`
+	PTYName           string            `json:"pty_name,omitempty"`
+	HasControlSession bool              `json:"has_control_session,omitempty"`
+	SavedTunnels      []TunnelConfig    `json:"saved_tunnels,omitempty"` // Tunnels from before MCP restart
 }
 
 // ExecResult represents the result of command execution.
@@ -1525,10 +1890,13 @@ type ExecResult struct {
 	Hint                 string            `json:"hint,omitempty"`
 	SudoAuthenticated    bool              `json:"sudo_authenticated,omitempty"`
 	SudoExpiresInSeconds int               `json:"sudo_expires_in_seconds,omitempty"`
-	// Output truncation info (when tail_lines or head_lines is used)
-	Truncated  bool `json:"truncated,omitempty"`
-	TotalLines int  `json:"total_lines,omitempty"`
-	ShownLines int  `json:"shown_lines,omitempty"`
+	// Output truncation info (when tail_lines or head_lines is used, or auto-truncation)
+	Truncated      bool   `json:"truncated,omitempty"`
+	TotalLines     int    `json:"total_lines,omitempty"`
+	ShownLines     int    `json:"shown_lines,omitempty"`
+	TotalBytes     int    `json:"total_bytes,omitempty"`      // Original output size in bytes
+	TruncatedBytes int    `json:"truncated_bytes,omitempty"`  // Bytes shown after truncation
+	Warning        string `json:"warning,omitempty"`          // Warning message for large outputs
 	// Async output from background processes (not from this command)
 	AsyncOutput string `json:"async_output,omitempty"`
 	// Command ID used for marker-based output isolation
@@ -1551,6 +1919,59 @@ func (s *Session) SFTPClient() (*sftp.Client, error) {
 	}
 
 	return s.sshClient.SFTPClient()
+}
+
+// TunnelManager returns the SSH tunnel manager for this session.
+// For local sessions, returns nil with an error.
+func (s *Session) TunnelManager() (*ssh.TunnelManager, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.Mode != "ssh" {
+		return nil, fmt.Errorf("tunnels not available for local sessions (SSH only)")
+	}
+
+	if s.sshClient == nil {
+		return nil, fmt.Errorf("SSH client not initialized")
+	}
+
+	return s.sshClient.TunnelManager(), nil
+}
+
+// GetTunnelConfigs returns configurations of active tunnels for persistence.
+func (s *Session) GetTunnelConfigs() []TunnelConfig {
+	if s.Mode != "ssh" || s.sshClient == nil {
+		return nil
+	}
+
+	tm := s.sshClient.TunnelManager()
+	if tm == nil {
+		return nil
+	}
+
+	tunnels := tm.ListTunnels()
+	if len(tunnels) == 0 {
+		return nil
+	}
+
+	configs := make([]TunnelConfig, 0, len(tunnels))
+	for _, t := range tunnels {
+		configs = append(configs, TunnelConfig{
+			Type:       string(t.Type),
+			LocalHost:  t.LocalHost,
+			LocalPort:  t.LocalPort,
+			RemoteHost: t.RemoteHost,
+			RemotePort: t.RemotePort,
+		})
+	}
+	return configs
+}
+
+// ClearSavedTunnels clears the saved tunnel configs after restoration.
+func (s *Session) ClearSavedTunnels() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.SavedTunnels = nil
 }
 
 // IsSSH returns true if this is an SSH session.

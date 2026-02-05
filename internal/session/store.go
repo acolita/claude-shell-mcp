@@ -9,15 +9,25 @@ import (
 	"sync"
 )
 
+// TunnelConfig contains the configuration needed to recreate a tunnel.
+type TunnelConfig struct {
+	Type       string `json:"type"`        // "local" or "reverse"
+	LocalHost  string `json:"local_host"`
+	LocalPort  int    `json:"local_port"`
+	RemoteHost string `json:"remote_host"`
+	RemotePort int    `json:"remote_port"`
+}
+
 // SessionMetadata contains the information needed to recreate a session.
 type SessionMetadata struct {
-	ID      string `json:"id"`
-	Mode    string `json:"mode"`
-	Host    string `json:"host,omitempty"`
-	Port    int    `json:"port,omitempty"`
-	User    string `json:"user,omitempty"`
-	KeyPath string `json:"key_path,omitempty"`
-	Cwd     string `json:"cwd,omitempty"`
+	ID      string         `json:"id"`
+	Mode    string         `json:"mode"`
+	Host    string         `json:"host,omitempty"`
+	Port    int            `json:"port,omitempty"`
+	User    string         `json:"user,omitempty"`
+	KeyPath string         `json:"key_path,omitempty"`
+	Cwd     string         `json:"cwd,omitempty"`
+	Tunnels []TunnelConfig `json:"tunnels,omitempty"`
 }
 
 // SessionStore persists session metadata to enable recovery after MCP restart.
@@ -65,6 +75,7 @@ func (s *SessionStore) Save(sess *Session) {
 		User:    sess.User,
 		KeyPath: sess.KeyPath,
 		Cwd:     sess.Cwd,
+		Tunnels: sess.GetTunnelConfigs(),
 	}
 
 	s.sessions[sess.ID] = meta

@@ -110,12 +110,9 @@ func (r *AuthRateLimiter) RecordSuccess(host, user string) {
 }
 
 // Reset resets the failure count for a host/user.
+// This is an alias for RecordSuccess for semantic clarity.
 func (r *AuthRateLimiter) Reset(host, user string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	k := key(host, user)
-	delete(r.failures, k)
+	r.RecordSuccess(host, user)
 }
 
 // Cleanup removes expired entries.

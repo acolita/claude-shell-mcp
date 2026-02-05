@@ -1,12 +1,14 @@
 # Git
 .git
 .gitignore
+.gitmodules
 
 # Build artifacts
 claude-shell-mcp
 dist/
 coverage.out
 coverage.html
+test-report.json
 
 # IDE
 .idea/
@@ -17,6 +19,7 @@ coverage.html
 # Test files
 test/
 *_test.go
+cmd/test-*/
 
 # Documentation
 *.md
@@ -26,3 +29,21 @@ test/
 config.example.yaml
 claude-code-config.json
 claude-desktop-config.json
+
+# Sensitive files - never copy to container
+.env
+.env.*
+*.pem
+*.key
+*.crt
+credentials*
+secrets*
+*.secret
+
+# Sonar
+sonar-project.properties
+sonar-todo.md
+scripts/
+
+# Submodules
+peak-tty/

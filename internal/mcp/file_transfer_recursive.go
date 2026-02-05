@@ -139,6 +139,164 @@ type TransferError struct {
 	Error string `json:"error"`
 }
 
+// addError is a helper to record transfer errors consistently.
+func (r *DirTransferResult) addError(path, errMsg string) {
+	r.Errors = append(r.Errors, TransferError{Path: path, Error: errMsg})
+}
+
+// symlinkAction represents the result of symlink handling.
+type symlinkAction int
+
+const (
+	symlinkSkip     symlinkAction = iota // Skip this entry entirely
+	symlinkHandled                       // Symlink was handled (preserved)
+	symlinkFollow                        // Continue processing the resolved target
+	symlinkError                         // Error occurred, skip entry
+)
+
+// handleDownloadSymlink processes a symlink during download operations.
+// Returns the action to take and potentially updated entry info.
+func handleDownloadSymlink(
+	client *sftp.Client,
+	remoteEntryPath, localEntryPath string,
+	symlinkMode string,
+	result *DirTransferResult,
+) (symlinkAction, os.FileInfo) {
+	switch symlinkMode {
+	case "skip":
+		return symlinkSkip, nil
+	case "preserve":
+		target, err := client.ReadLink(remoteEntryPath)
+		if err != nil {
+			result.addError(remoteEntryPath, fmt.Sprintf("read symlink: %v", err))
+			return symlinkError, nil
+		}
+		if err := os.MkdirAll(filepath.Dir(localEntryPath), 0755); err != nil {
+			result.addError(localEntryPath, fmt.Sprintf("create parent dir: %v", err))
+			return symlinkError, nil
+		}
+		if err := os.Symlink(target, localEntryPath); err != nil {
+			result.addError(localEntryPath, fmt.Sprintf("create symlink: %v", err))
+			return symlinkError, nil
+		}
+		result.SymlinksHandled++
+		return symlinkHandled, nil
+	default: // "follow"
+		entry, err := client.Stat(remoteEntryPath)
+		if err != nil {
+			result.addError(remoteEntryPath, fmt.Sprintf("stat symlink target: %v", err))
+			return symlinkError, nil
+		}
+		return symlinkFollow, entry
+	}
+}
+
+// handleUploadSymlink processes a symlink during upload operations.
+// Returns the action to take and potentially updated file info.
+func handleUploadSymlink(
+	sftpClient *sftp.Client,
+	localPath, remoteEntryPath string,
+	symlinkMode string,
+	result *DirTransferResult,
+) (symlinkAction, os.FileInfo) {
+	switch symlinkMode {
+	case "skip":
+		return symlinkSkip, nil
+	case "preserve":
+		target, err := os.Readlink(localPath)
+		if err != nil {
+			result.addError(localPath, fmt.Sprintf("read symlink: %v", err))
+			return symlinkError, nil
+		}
+		if err := sftpClient.Symlink(target, remoteEntryPath); err != nil {
+			result.addError(remoteEntryPath, fmt.Sprintf("create symlink: %v", err))
+			return symlinkError, nil
+		}
+		result.SymlinksHandled++
+		return symlinkHandled, nil
+	default: // "follow"
+		info, err := os.Stat(localPath)
+		if err != nil {
+			result.addError(localPath, fmt.Sprintf("stat symlink target: %v", err))
+			return symlinkError, nil
+		}
+		return symlinkFollow, info
+	}
+}
+
+// downloadSingleFile downloads a single file from remote to local.
+func downloadSingleFile(
+	client *sftp.Client,
+	remoteEntryPath, localEntryPath string,
+	entry os.FileInfo,
+	preserve bool,
+	result *DirTransferResult,
+) {
+	data, _, err := client.GetFile(remoteEntryPath)
+	if err != nil {
+		result.addError(remoteEntryPath, err.Error())
+		return
+	}
+
+	if err := os.MkdirAll(filepath.Dir(localEntryPath), 0755); err != nil {
+		result.addError(localEntryPath, err.Error())
+		return
+	}
+
+	if err := os.WriteFile(localEntryPath, data, entry.Mode().Perm()); err != nil {
+		result.addError(localEntryPath, err.Error())
+		return
+	}
+
+	if preserve {
+		os.Chtimes(localEntryPath, entry.ModTime(), entry.ModTime())
+	}
+
+	result.FilesTransferred++
+	result.TotalBytes += entry.Size()
+}
+
+// uploadSingleFile uploads a single file from local to remote.
+func uploadSingleFile(
+	sftpClient *sftp.Client,
+	localPath, remoteEntryPath string,
+	info os.FileInfo,
+	opts DirPutOptions,
+	result *DirTransferResult,
+) {
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		result.addError(localPath, err.Error())
+		return
+	}
+
+	remoteDir := filepath.Dir(remoteEntryPath)
+	remoteDir = strings.ReplaceAll(remoteDir, "\\", "/")
+	if err := sftpClient.MkdirAll(remoteDir); err != nil {
+		result.addError(remoteDir, err.Error())
+		return
+	}
+
+	if !opts.Overwrite {
+		if _, err := sftpClient.Stat(remoteEntryPath); err == nil {
+			result.addError(remoteEntryPath, "file exists (use overwrite=true)")
+			return
+		}
+	}
+
+	if err := sftpClient.PutFile(remoteEntryPath, data, info.Mode().Perm()); err != nil {
+		result.addError(remoteEntryPath, err.Error())
+		return
+	}
+
+	if opts.Preserve {
+		sftpClient.Chtimes(remoteEntryPath, info.ModTime(), info.ModTime())
+	}
+
+	result.FilesTransferred++
+	result.TotalBytes += info.Size()
+}
+
 // DirGetOptions contains options for directory download operations.
 type DirGetOptions struct {
 	LocalPath  string
@@ -174,7 +332,7 @@ func (s *Server) handleShellDirGet(ctx context.Context, req mcp.CallToolRequest)
 	}
 
 	if sessionID == "" {
-		return mcp.NewToolResultError("session_id is required"), nil
+		return mcp.NewToolResultError(errSessionIDRequired), nil
 	}
 	if remotePath == "" {
 		return mcp.NewToolResultError("remote_path is required"), nil
@@ -224,140 +382,99 @@ func (s *Server) handleSSHDirGet(sess *session.Session, remotePath string, opts 
 		return mcp.NewToolResultError(fmt.Sprintf("create local directory: %v", err)), nil
 	}
 
-	result := DirTransferResult{
-		Status: "completed",
+	result := DirTransferResult{Status: "completed"}
+
+	ctx := &remoteWalkContext{
+		client:     sftpClient,
+		remotePath: remotePath,
+		localBase:  opts.LocalPath,
+		opts:       opts,
+		result:     &result,
+	}
+	if err = s.walkRemoteDir(ctx, "", 0); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf(errWalkDir, err)), nil
 	}
 
-	// Walk remote directory
-	err = s.walkRemoteDir(sftpClient, remotePath, opts.LocalPath, "", 0, opts, &result)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("walk directory: %v", err)), nil
-	}
-
-	// Calculate duration and transfer rate
-	duration := time.Since(startTime)
-	result.DurationMs = duration.Milliseconds()
-	if duration.Seconds() > 0 {
-		result.BytesPerSecond = int64(float64(result.TotalBytes) / duration.Seconds())
-	}
-
-	if len(result.Errors) > 0 {
-		result.Status = "completed_with_errors"
-	}
-
+	finalizeTransferResult(&result, startTime)
 	return jsonResult(result)
 }
 
-func (s *Server) walkRemoteDir(client *sftp.Client, remotePath, localBase, relPath string, depth int, opts DirGetOptions, result *DirTransferResult) error {
-	if depth > opts.MaxDepth {
+// remoteWalkContext holds the constant context during remote directory traversal.
+type remoteWalkContext struct {
+	client     *sftp.Client
+	remotePath string
+	localBase  string
+	opts       DirGetOptions
+	result     *DirTransferResult
+}
+
+// processRemoteEntry handles a single entry during remote directory walk.
+func (s *Server) processRemoteEntry(ctx *remoteWalkContext, entry os.FileInfo, entryRelPath string, depth int) error {
+	remoteEntryPath := ctx.remotePath + "/" + entryRelPath
+	localEntryPath := filepath.Join(ctx.localBase, entryRelPath)
+
+	// Process symlinks
+	if entry.Mode()&os.ModeSymlink != 0 {
+		action, resolved := handleDownloadSymlink(ctx.client, remoteEntryPath, localEntryPath, ctx.opts.Symlinks, ctx.result)
+		if action != symlinkFollow {
+			return nil // Skip this entry
+		}
+		entry = resolved
+	}
+
+	if entry.IsDir() {
+		return s.walkRemoteDir(ctx, entryRelPath, depth+1)
+	}
+
+	if !matchesPattern(entryRelPath, ctx.opts.Pattern) {
 		return nil
 	}
 
-	currentRemote := remotePath
-	if relPath != "" {
-		currentRemote = remotePath + "/" + relPath
+	downloadSingleFile(ctx.client, remoteEntryPath, localEntryPath, entry, ctx.opts.Preserve, ctx.result)
+	return nil
+}
+
+func (s *Server) walkRemoteDir(ctx *remoteWalkContext, relPath string, depth int) error {
+	if depth > ctx.opts.MaxDepth {
+		return nil
 	}
 
-	entries, err := client.ReadDir(currentRemote)
+	currentRemote := ctx.remotePath
+	if relPath != "" {
+		currentRemote = ctx.remotePath + "/" + relPath
+	}
+
+	entries, err := ctx.client.ReadDir(currentRemote)
 	if err != nil {
-		result.Errors = append(result.Errors, TransferError{Path: currentRemote, Error: err.Error()})
+		ctx.result.addError(currentRemote, err.Error())
 		return nil
 	}
 
 	for _, entry := range entries {
-		name := entry.Name()
-
-		// Check exclusions
-		if shouldExclude(name, opts.Exclusions) {
+		if shouldExclude(entry.Name(), ctx.opts.Exclusions) {
 			continue
 		}
 
-		entryRelPath := name
-		if relPath != "" {
-			entryRelPath = relPath + "/" + name
-		}
-		remoteEntryPath := remotePath + "/" + entryRelPath
-		localEntryPath := filepath.Join(localBase, entryRelPath)
-
-		// Handle symlinks
-		if entry.Mode()&os.ModeSymlink != 0 {
-			switch opts.Symlinks {
-			case "skip":
-				continue
-			case "preserve":
-				target, err := client.ReadLink(remoteEntryPath)
-				if err != nil {
-					result.Errors = append(result.Errors, TransferError{Path: remoteEntryPath, Error: fmt.Sprintf("read symlink: %v", err)})
-					continue
-				}
-				if err := os.MkdirAll(filepath.Dir(localEntryPath), 0755); err != nil {
-					result.Errors = append(result.Errors, TransferError{Path: localEntryPath, Error: fmt.Sprintf("create parent dir: %v", err)})
-					continue
-				}
-				if err := os.Symlink(target, localEntryPath); err != nil {
-					result.Errors = append(result.Errors, TransferError{Path: localEntryPath, Error: fmt.Sprintf("create symlink: %v", err)})
-					continue
-				}
-				result.SymlinksHandled++
-				continue
-			default: // "follow"
-				// Re-stat to follow the symlink
-				entry, err = client.Stat(remoteEntryPath)
-				if err != nil {
-					result.Errors = append(result.Errors, TransferError{Path: remoteEntryPath, Error: fmt.Sprintf("stat symlink target: %v", err)})
-					continue
-				}
-			}
-		}
-
-		if entry.IsDir() {
-			// Always traverse directories to find matching files
-			// But only create the directory if we have files to put in it
-			if err := s.walkRemoteDir(client, remotePath, localBase, entryRelPath, depth+1, opts, result); err != nil {
-				return err
-			}
-		} else {
-			// Check if file matches pattern (only filter files, not directories)
-			if !matchesPattern(entryRelPath, opts.Pattern) {
-				continue
-			}
-
-			// Download file
-			data, _, err := client.GetFile(remoteEntryPath)
-			if err != nil {
-				result.Errors = append(result.Errors, TransferError{Path: remoteEntryPath, Error: err.Error()})
-				continue
-			}
-
-			// Ensure parent directory exists
-			if err := os.MkdirAll(filepath.Dir(localEntryPath), 0755); err != nil {
-				result.Errors = append(result.Errors, TransferError{Path: localEntryPath, Error: err.Error()})
-				continue
-			}
-
-			// Write file
-			if err := os.WriteFile(localEntryPath, data, entry.Mode().Perm()); err != nil {
-				result.Errors = append(result.Errors, TransferError{Path: localEntryPath, Error: err.Error()})
-				continue
-			}
-
-			// Preserve timestamps
-			if opts.Preserve {
-				os.Chtimes(localEntryPath, entry.ModTime(), entry.ModTime())
-			}
-
-			result.FilesTransferred++
-			result.TotalBytes += entry.Size()
+		entryRelPath := buildRelPath(relPath, entry.Name())
+		if err := s.processRemoteEntry(ctx, entry, entryRelPath, depth); err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
+// buildRelPath constructs a relative path from parent and name.
+func buildRelPath(parent, name string) string {
+	if parent == "" {
+		return name
+	}
+	return parent + "/" + name
+}
+
 func (s *Server) handleLocalDirCopy(srcPath, dstPath string, opts DirGetOptions) (*mcp.CallToolResult, error) {
 	startTime := time.Now()
 
-	// Verify source is a directory
 	info, err := os.Stat(srcPath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("stat source: %v", err)), nil
@@ -366,84 +483,83 @@ func (s *Server) handleLocalDirCopy(srcPath, dstPath string, opts DirGetOptions)
 		return mcp.NewToolResultError("source path is not a directory"), nil
 	}
 
-	result := DirTransferResult{
-		Status: "completed",
-	}
+	result := DirTransferResult{Status: "completed"}
 
-	err = filepath.WalkDir(srcPath, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			result.Errors = append(result.Errors, TransferError{Path: path, Error: err.Error()})
-			return nil
-		}
-
-		relPath, _ := filepath.Rel(srcPath, path)
-		if relPath == "." {
-			return nil
-		}
-
-		// Check exclusions
-		if shouldExclude(d.Name(), opts.Exclusions) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		dstEntryPath := filepath.Join(dstPath, relPath)
-
-		if d.IsDir() {
-			// Always traverse directories
-			return nil
-		}
-
-		// Check if file matches pattern
-		if !matchesPattern(relPath, opts.Pattern) {
-			return nil
-		}
-
-		// Copy file - ensure parent directory exists
-		if err := os.MkdirAll(filepath.Dir(dstEntryPath), 0755); err != nil {
-			result.Errors = append(result.Errors, TransferError{Path: dstEntryPath, Error: err.Error()})
-			return nil
-		}
-
-		data, err := os.ReadFile(path)
-		if err != nil {
-			result.Errors = append(result.Errors, TransferError{Path: path, Error: err.Error()})
-			return nil
-		}
-
-		info, _ := d.Info()
-		if err := os.WriteFile(dstEntryPath, data, info.Mode().Perm()); err != nil {
-			result.Errors = append(result.Errors, TransferError{Path: dstEntryPath, Error: err.Error()})
-			return nil
-		}
-
-		if opts.Preserve {
-			os.Chtimes(dstEntryPath, info.ModTime(), info.ModTime())
-		}
-
-		result.FilesTransferred++
-		result.TotalBytes += info.Size()
-		return nil
+	err = filepath.WalkDir(srcPath, func(path string, d fs.DirEntry, walkErr error) error {
+		return processLocalCopyEntry(srcPath, dstPath, path, d, walkErr, opts, &result)
 	})
 
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("walk directory: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf(errWalkDir, err)), nil
 	}
 
-	// Calculate duration and transfer rate
-	duration := time.Since(startTime)
-	result.DurationMs = duration.Milliseconds()
-	if duration.Seconds() > 0 {
-		result.BytesPerSecond = int64(float64(result.TotalBytes) / duration.Seconds())
-	}
-
-	if len(result.Errors) > 0 {
-		result.Status = "completed_with_errors"
-	}
-
+	finalizeTransferResult(&result, startTime)
 	return jsonResult(result)
+}
+
+// processLocalCopyEntry handles a single entry during local directory copy.
+func processLocalCopyEntry(
+	srcPath, dstPath, path string,
+	d fs.DirEntry,
+	walkErr error,
+	opts DirGetOptions,
+	result *DirTransferResult,
+) error {
+	if walkErr != nil {
+		result.addError(path, walkErr.Error())
+		return nil
+	}
+
+	relPath, _ := filepath.Rel(srcPath, path)
+	if relPath == "." {
+		return nil
+	}
+
+	if shouldExclude(d.Name(), opts.Exclusions) {
+		if d.IsDir() {
+			return filepath.SkipDir
+		}
+		return nil
+	}
+
+	if d.IsDir() {
+		return nil
+	}
+
+	if !matchesPattern(relPath, opts.Pattern) {
+		return nil
+	}
+
+	dstEntryPath := filepath.Join(dstPath, relPath)
+	copyLocalFile(path, dstEntryPath, d, opts.Preserve, result)
+	return nil
+}
+
+// copyLocalFile copies a single file locally.
+func copyLocalFile(srcPath, dstPath string, d fs.DirEntry, preserve bool, result *DirTransferResult) {
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+		result.addError(dstPath, err.Error())
+		return
+	}
+
+	data, err := os.ReadFile(srcPath)
+	if err != nil {
+		result.addError(srcPath, err.Error())
+		return
+	}
+
+	info, _ := d.Info()
+	if err := os.WriteFile(dstPath, data, info.Mode().Perm()); err != nil {
+		result.addError(dstPath, err.Error())
+		return
+	}
+
+	if preserve {
+		os.Chtimes(dstPath, info.ModTime(), info.ModTime())
+	}
+
+	result.FilesTransferred++
+	result.TotalBytes += info.Size()
 }
 
 func (s *Server) handleShellDirPut(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -461,7 +577,7 @@ func (s *Server) handleShellDirPut(ctx context.Context, req mcp.CallToolRequest)
 	}
 
 	if sessionID == "" {
-		return mcp.NewToolResultError("session_id is required"), nil
+		return mcp.NewToolResultError(errSessionIDRequired), nil
 	}
 	if localPath == "" {
 		return mcp.NewToolResultError("local_path is required"), nil
@@ -497,7 +613,6 @@ func (s *Server) handleSSHDirPut(sess *session.Session, localPath, remotePath st
 		return mcp.NewToolResultError(fmt.Sprintf("get SFTP client: %v", err)), nil
 	}
 
-	// Verify local path is a directory
 	info, err := os.Stat(localPath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("stat local path: %v", err)), nil
@@ -506,134 +621,98 @@ func (s *Server) handleSSHDirPut(sess *session.Session, localPath, remotePath st
 		return mcp.NewToolResultError("local_path is not a directory, use shell_file_put for files"), nil
 	}
 
-	// Create remote base directory
 	if err := sftpClient.MkdirAll(remotePath); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("create remote directory: %v", err)), nil
 	}
 
-	result := DirTransferResult{
-		Status: "completed",
+	result := DirTransferResult{Status: "completed"}
+
+	ctx := &uploadWalkContext{
+		client:     sftpClient,
+		localBase:  localPath,
+		remotePath: remotePath,
+		opts:       opts,
+		result:     &result,
 	}
-
-	// Walk local directory
-	err = filepath.WalkDir(localPath, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			result.Errors = append(result.Errors, TransferError{Path: path, Error: err.Error()})
-			return nil
-		}
-
-		relPath, _ := filepath.Rel(localPath, path)
-		if relPath == "." {
-			return nil
-		}
-
-		// Check exclusions
-		if shouldExclude(d.Name(), opts.Exclusions) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		// Use forward slashes for remote paths
-		remoteEntryPath := remotePath + "/" + strings.ReplaceAll(relPath, "\\", "/")
-
-		// Handle symlinks
-		if d.Type()&os.ModeSymlink != 0 {
-			switch opts.Symlinks {
-			case "skip":
-				return nil
-			case "preserve":
-				target, err := os.Readlink(path)
-				if err != nil {
-					result.Errors = append(result.Errors, TransferError{Path: path, Error: fmt.Sprintf("read symlink: %v", err)})
-					return nil
-				}
-				if err := sftpClient.Symlink(target, remoteEntryPath); err != nil {
-					result.Errors = append(result.Errors, TransferError{Path: remoteEntryPath, Error: fmt.Sprintf("create symlink: %v", err)})
-					return nil
-				}
-				result.SymlinksHandled++
-				return nil
-			default: // "follow"
-				// Continue with the resolved target
-				info, err := os.Stat(path)
-				if err != nil {
-					result.Errors = append(result.Errors, TransferError{Path: path, Error: fmt.Sprintf("stat symlink target: %v", err)})
-					return nil
-				}
-				if info.IsDir() {
-					d = dirEntryFromInfo{info}
-				}
-			}
-		}
-
-		if d.IsDir() {
-			// Always traverse directories to find matching files
-			return nil
-		}
-
-		// Check if file matches pattern
-		if !matchesPattern(relPath, opts.Pattern) {
-			return nil
-		}
-
-		// Upload file
-		data, err := os.ReadFile(path)
-		if err != nil {
-			result.Errors = append(result.Errors, TransferError{Path: path, Error: err.Error()})
-			return nil
-		}
-
-		// Ensure parent directory exists
-		remoteDir := filepath.Dir(remoteEntryPath)
-		remoteDir = strings.ReplaceAll(remoteDir, "\\", "/")
-		if err := sftpClient.MkdirAll(remoteDir); err != nil {
-			result.Errors = append(result.Errors, TransferError{Path: remoteDir, Error: err.Error()})
-			return nil
-		}
-
-		// Check if file exists and skip if not overwriting
-		if !opts.Overwrite {
-			if _, err := sftpClient.Stat(remoteEntryPath); err == nil {
-				result.Errors = append(result.Errors, TransferError{Path: remoteEntryPath, Error: "file exists (use overwrite=true)"})
-				return nil
-			}
-		}
-
-		info, _ := d.Info()
-		if err := sftpClient.PutFile(remoteEntryPath, data, info.Mode().Perm()); err != nil {
-			result.Errors = append(result.Errors, TransferError{Path: remoteEntryPath, Error: err.Error()})
-			return nil
-		}
-
-		// Preserve timestamps
-		if opts.Preserve {
-			sftpClient.Chtimes(remoteEntryPath, info.ModTime(), info.ModTime())
-		}
-
-		result.FilesTransferred++
-		result.TotalBytes += info.Size()
-		return nil
+	err = filepath.WalkDir(localPath, func(path string, d fs.DirEntry, walkErr error) error {
+		return s.processUploadEntry(ctx, path, d, walkErr)
 	})
 
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("walk directory: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf(errWalkDir, err)), nil
 	}
 
-	// Calculate duration and transfer rate
+	finalizeTransferResult(&result, startTime)
+	return jsonResult(result)
+}
+
+// uploadWalkContext holds the constant context during directory upload traversal.
+type uploadWalkContext struct {
+	client     *sftp.Client
+	localBase  string
+	remotePath string
+	opts       DirPutOptions
+	result     *DirTransferResult
+}
+
+// processUploadEntry handles a single entry during directory upload.
+func (s *Server) processUploadEntry(ctx *uploadWalkContext, path string, d fs.DirEntry, walkErr error) error {
+	if walkErr != nil {
+		ctx.result.addError(path, walkErr.Error())
+		return nil
+	}
+
+	relPath, _ := filepath.Rel(ctx.localBase, path)
+	if relPath == "." {
+		return nil
+	}
+
+	if shouldExclude(d.Name(), ctx.opts.Exclusions) {
+		if d.IsDir() {
+			return filepath.SkipDir
+		}
+		return nil
+	}
+
+	remoteEntryPath := ctx.remotePath + "/" + strings.ReplaceAll(relPath, "\\", "/")
+
+	if d.Type()&os.ModeSymlink != 0 {
+		action, resolved := handleUploadSymlink(ctx.client, path, remoteEntryPath, ctx.opts.Symlinks, ctx.result)
+		switch action {
+		case symlinkSkip, symlinkHandled, symlinkError:
+			return nil
+		case symlinkFollow:
+			if resolved.IsDir() {
+				d = dirEntryFromInfo{resolved}
+			}
+		}
+	}
+
+	if d.IsDir() {
+		return nil
+	}
+
+	if !matchesPattern(relPath, ctx.opts.Pattern) {
+		return nil
+	}
+
+	info, _ := d.Info()
+	uploadSingleFile(ctx.client, path, remoteEntryPath, info, ctx.opts, ctx.result)
+	return nil
+}
+
+// finalizeTransferResult calculates duration and sets final status.
+func finalizeTransferResult(result *DirTransferResult, startTime time.Time) {
 	duration := time.Since(startTime)
 	result.DurationMs = duration.Milliseconds()
 	if duration.Seconds() > 0 {
 		result.BytesPerSecond = int64(float64(result.TotalBytes) / duration.Seconds())
 	}
-
 	if len(result.Errors) > 0 {
 		result.Status = "completed_with_errors"
 	}
-
-	return jsonResult(result)
 }
+
 
 func (s *Server) handleLocalDirCopyPut(srcPath, dstPath string, opts DirPutOptions) (*mcp.CallToolResult, error) {
 	// For local sessions, this is essentially the same as DirGet but with different semantics

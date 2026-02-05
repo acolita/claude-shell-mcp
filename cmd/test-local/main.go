@@ -10,6 +10,8 @@ import (
 	"github.com/acolita/claude-shell-mcp/internal/session"
 )
 
+const errExecCmdFmt = "Error executing command: %v\n"
+
 func main() {
 	cfg := config.DefaultConfig()
 	mgr := session.NewManager(cfg)
@@ -28,7 +30,7 @@ func main() {
 	fmt.Println("\nExecuting: echo 'hello world'")
 	result, err := sess.Exec("echo 'hello world'", 5000)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error executing command: %v\n", err)
+		fmt.Fprintf(os.Stderr, errExecCmdFmt, err)
 		os.Exit(1)
 	}
 
@@ -38,7 +40,7 @@ func main() {
 	fmt.Println("\nExecuting: pwd")
 	result, err = sess.Exec("pwd", 5000)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error executing command: %v\n", err)
+		fmt.Fprintf(os.Stderr, errExecCmdFmt, err)
 		os.Exit(1)
 	}
 
@@ -48,7 +50,7 @@ func main() {
 	fmt.Println("\nExecuting: cd /tmp")
 	result, err = sess.Exec("cd /tmp", 5000)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error executing command: %v\n", err)
+		fmt.Fprintf(os.Stderr, errExecCmdFmt, err)
 		os.Exit(1)
 	}
 	printResult(result)
@@ -57,7 +59,7 @@ func main() {
 	fmt.Println("\nExecuting: pwd (should be /tmp)")
 	result, err = sess.Exec("pwd", 5000)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error executing command: %v\n", err)
+		fmt.Fprintf(os.Stderr, errExecCmdFmt, err)
 		os.Exit(1)
 	}
 	printResult(result)
@@ -66,7 +68,7 @@ func main() {
 	fmt.Println("\nExecuting: ls -1 | head -3")
 	result, err = sess.Exec("ls -1 | head -3", 5000)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error executing command: %v\n", err)
+		fmt.Fprintf(os.Stderr, errExecCmdFmt, err)
 		os.Exit(1)
 	}
 
@@ -76,7 +78,7 @@ func main() {
 	fmt.Println("\nExecuting: export FOO=bar")
 	result, err = sess.Exec("export FOO=bar", 5000)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error executing command: %v\n", err)
+		fmt.Fprintf(os.Stderr, errExecCmdFmt, err)
 		os.Exit(1)
 	}
 	printResult(result)
@@ -84,7 +86,7 @@ func main() {
 	fmt.Println("\nExecuting: echo $FOO")
 	result, err = sess.Exec("echo $FOO", 5000)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error executing command: %v\n", err)
+		fmt.Fprintf(os.Stderr, errExecCmdFmt, err)
 		os.Exit(1)
 	}
 	printResult(result)

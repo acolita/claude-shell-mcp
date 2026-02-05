@@ -205,6 +205,44 @@ func (s *Server) handleConnection(netConn net.Conn) {
 	}
 }
 
+// replyIfWanted sends a reply if the request wants one.
+func replyIfWanted(req *ssh.Request, ok bool) {
+	if req.WantReply {
+		req.Reply(ok, nil)
+	}
+}
+
+// handlePtyReq processes a pty-req request.
+func (s *Server) handlePtyReq(req *ssh.Request) *ptyRequest {
+	ptyReq := parsePtyRequest(req.Payload)
+	replyIfWanted(req, true)
+	return ptyReq
+}
+
+// handleShellReq processes a shell request.
+func (s *Server) handleShellReq(req *ssh.Request, sess *session, ptyReq *ptyRequest) {
+	if ptyReq != nil {
+		s.handleShell(sess, ptyReq)
+	}
+	replyIfWanted(req, true)
+}
+
+// handleExecReq processes an exec request.
+func (s *Server) handleExecReq(req *ssh.Request, sess *session, ptyReq *ptyRequest) {
+	cmd := parseExecRequest(req.Payload)
+	s.handleExec(sess, cmd, ptyReq)
+	replyIfWanted(req, true)
+}
+
+// handleWindowChangeReq processes a window-change request.
+func handleWindowChangeReq(req *ssh.Request, sess *session) {
+	if sess.pty != nil {
+		winReq := parseWindowChangeRequest(req.Payload)
+		setWinsize(sess.pty, winReq.Width, winReq.Height)
+	}
+	replyIfWanted(req, true)
+}
+
 func (s *Server) handleChannel(channel ssh.Channel, requests <-chan *ssh.Request) {
 	defer s.wg.Done()
 	defer channel.Close()
@@ -219,39 +257,15 @@ func (s *Server) handleChannel(channel ssh.Channel, requests <-chan *ssh.Request
 	for req := range requests {
 		switch req.Type {
 		case "pty-req":
-			ptyReq = parsePtyRequest(req.Payload)
-			if req.WantReply {
-				req.Reply(true, nil)
-			}
-
+			ptyReq = s.handlePtyReq(req)
 		case "shell":
-			if ptyReq != nil {
-				s.handleShell(sess, ptyReq)
-			}
-			if req.WantReply {
-				req.Reply(true, nil)
-			}
-
+			s.handleShellReq(req, sess, ptyReq)
 		case "exec":
-			cmd := parseExecRequest(req.Payload)
-			s.handleExec(sess, cmd, ptyReq)
-			if req.WantReply {
-				req.Reply(true, nil)
-			}
-
+			s.handleExecReq(req, sess, ptyReq)
 		case "window-change":
-			if sess.pty != nil {
-				winReq := parseWindowChangeRequest(req.Payload)
-				setWinsize(sess.pty, winReq.Width, winReq.Height)
-			}
-			if req.WantReply {
-				req.Reply(true, nil)
-			}
-
+			handleWindowChangeReq(req, sess)
 		default:
-			if req.WantReply {
-				req.Reply(false, nil)
-			}
+			replyIfWanted(req, false)
 		}
 	}
 }
@@ -264,66 +278,63 @@ func (s *Server) handleExec(sess *session, command string, ptyReq *ptyRequest) {
 	s.runCommand(sess, s.shell, ptyReq, "-c", command)
 }
 
+// extractExitCode returns the exit code from an error, or 1 if it can't be determined.
+func extractExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		return exitErr.ExitCode()
+	}
+	return 1
+}
+
+// runWithPTY runs a command with PTY attached.
+func (s *Server) runWithPTY(sess *session, cmd *exec.Cmd, ptyReq *ptyRequest) {
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		slog.Debug("pty start failed", slog.String("error", err.Error()))
+		sendExitStatus(sess.channel, 1)
+		return
+	}
+	sess.pty = ptmx
+	sess.cmd = cmd
+
+	setWinsize(ptmx, ptyReq.Width, ptyReq.Height)
+
+	done := make(chan struct{})
+	go func() {
+		io.Copy(sess.channel, ptmx)
+		close(done)
+	}()
+	go func() {
+		io.Copy(ptmx, sess.channel)
+	}()
+
+	exitCode := extractExitCode(cmd.Wait())
+	ptmx.Close()
+	<-done
+	sendExitStatus(sess.channel, exitCode)
+}
+
+// runWithoutPTY runs a command without PTY, capturing output directly.
+func (s *Server) runWithoutPTY(sess *session, cmd *exec.Cmd) {
+	output, err := cmd.CombinedOutput()
+	sess.cmd = cmd
+
+	exitCode := extractExitCode(err)
+	sess.channel.Write(output)
+	sendExitStatus(sess.channel, exitCode)
+}
+
 func (s *Server) runCommand(sess *session, name string, ptyReq *ptyRequest, args ...string) {
 	cmd := exec.Command(name, args...)
 	cmd.Env = os.Environ()
 
 	if ptyReq != nil {
-		// Use PTY
-		ptmx, err := pty.Start(cmd)
-		if err != nil {
-			slog.Debug("pty start failed", slog.String("error", err.Error()))
-			sendExitStatus(sess.channel, 1)
-			return
-		}
-		sess.pty = ptmx
-		sess.cmd = cmd
-
-		// Set initial size
-		setWinsize(ptmx, ptyReq.Width, ptyReq.Height)
-
-		// Copy data between channel and PTY
-		done := make(chan struct{})
-		go func() {
-			io.Copy(sess.channel, ptmx)
-			close(done)
-		}()
-		go func() {
-			io.Copy(ptmx, sess.channel)
-		}()
-
-		// Wait for command to complete
-		exitCode := 0
-		if err := cmd.Wait(); err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				exitCode = exitErr.ExitCode()
-			} else {
-				exitCode = 1
-			}
-		}
-
-		ptmx.Close()
-		<-done // Wait for output to be flushed
-
-		sendExitStatus(sess.channel, exitCode)
+		s.runWithPTY(sess, cmd, ptyReq)
 	} else {
-		// No PTY - capture output directly
-		output, err := cmd.CombinedOutput()
-		sess.cmd = cmd
-
-		exitCode := 0
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				exitCode = exitErr.ExitCode()
-			} else {
-				exitCode = 1
-			}
-		}
-
-		// Write output to channel
-		sess.channel.Write(output)
-
-		sendExitStatus(sess.channel, exitCode)
+		s.runWithoutPTY(sess, cmd)
 	}
 }
 

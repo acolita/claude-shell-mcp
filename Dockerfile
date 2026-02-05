@@ -10,8 +10,10 @@ RUN apk add --no-cache git
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
-COPY . .
+# Copy only source code directories needed for build
+# (sensitive files excluded via .dockerignore as defense in depth)
+COPY cmd/ cmd/
+COPY internal/ internal/
 
 # Build the binary
 ARG VERSION=dev
@@ -24,22 +26,20 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # Runtime stage
 FROM alpine:3.19
 
-# Install runtime dependencies
+# Install runtime dependencies and create non-root user
 RUN apk add --no-cache \
     ca-certificates \
     openssh-client \
-    bash
+    bash && \
+    adduser -D -h /home/mcp mcp && \
+    mkdir -p /home/mcp/.config/claude-shell-mcp && \
+    chown -R mcp:mcp /home/mcp
 
-# Create non-root user
-RUN adduser -D -h /home/mcp mcp
 USER mcp
 WORKDIR /home/mcp
 
 # Copy binary from builder
 COPY --from=builder /build/claude-shell-mcp /usr/local/bin/
-
-# Create config directory
-RUN mkdir -p /home/mcp/.config/claude-shell-mcp
 
 # Default environment
 ENV HOME=/home/mcp

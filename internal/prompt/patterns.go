@@ -267,7 +267,9 @@ func DefaultPatterns() []Pattern {
 		},
 		{
 			Name:  "python_continuation",
-			Regex: regexp.MustCompile(`\.\.\.\s*$`),
+			// Match Python's "..." continuation prompt, but only when it's alone on a line
+			// or at the start of a line (not when text ends with "...")
+			Regex: regexp.MustCompile(`(?m)^\.\.\.\s*$`),
 			Type:  PromptTypeText,
 		},
 		{

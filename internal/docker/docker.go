@@ -55,7 +55,7 @@ func BuildExecCommand(opts ExecOptions) string {
 	// Handle command - if it contains spaces and isn't already a shell command, wrap it
 	if opts.Command != "" {
 		if strings.Contains(opts.Command, " ") && !strings.HasPrefix(opts.Command, "/bin/") && !strings.HasPrefix(opts.Command, "sh ") && !strings.HasPrefix(opts.Command, "bash ") {
-			args = append(args, "/bin/sh", "-c", opts.Command)
+			args = append(args, defaultShell, "-c", opts.Command)
 		} else {
 			args = append(args, strings.Fields(opts.Command)...)
 		}
@@ -121,7 +121,7 @@ func BuildComposeExecCommand(opts ComposeExecOptions) string {
 	// Handle command
 	if opts.Command != "" {
 		if strings.Contains(opts.Command, " ") && !strings.HasPrefix(opts.Command, "/bin/") && !strings.HasPrefix(opts.Command, "sh ") && !strings.HasPrefix(opts.Command, "bash ") {
-			args = append(args, "/bin/sh", "-c", opts.Command)
+			args = append(args, defaultShell, "-c", opts.Command)
 		} else {
 			args = append(args, strings.Fields(opts.Command)...)
 		}

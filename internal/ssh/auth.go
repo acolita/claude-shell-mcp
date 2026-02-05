@@ -26,62 +26,91 @@ type AuthConfig struct {
 func BuildAuthMethods(cfg AuthConfig) ([]ssh.AuthMethod, error) {
 	var methods []ssh.AuthMethod
 
-	// Try SSH agent first if requested
-	if cfg.UseAgent {
-		if agentAuth, err := sshAgentAuth(); err == nil {
-			methods = append(methods, agentAuth)
-		}
-	}
+	methods = trySSHAgentAuth(cfg, methods)
 
-	// Add key file authentication
-	if cfg.KeyPath != "" {
-		keyAuth, err := privateKeyAuth(cfg.KeyPath, cfg.KeyPassphrase)
-		if err != nil {
-			return nil, fmt.Errorf("private key auth: %w", err)
-		}
+	keyAuth, err := tryExplicitKeyAuth(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if keyAuth != nil {
 		methods = append(methods, keyAuth)
 	}
 
-	// Try SSH config lookup if no explicit key specified
-	if cfg.KeyPath == "" && cfg.Host != "" {
-		configKey := getSSHConfigIdentityFile(cfg.Host)
-		if configKey != "" {
-			keyAuth, err := privateKeyAuth(configKey, cfg.KeyPassphrase)
-			if err == nil {
-				methods = append(methods, keyAuth)
-			}
-		}
-	}
-
-	// Try default key locations if no explicit key specified and no password
-	if cfg.KeyPath == "" && cfg.Password == "" && len(methods) == 0 {
-		defaultKeys := []string{
-			"~/.ssh/id_ed25519",
-			"~/.ssh/id_rsa",
-			"~/.ssh/id_ecdsa",
-		}
-		for _, keyPath := range defaultKeys {
-			expanded := expandPath(keyPath)
-			if _, err := os.Stat(expanded); err == nil {
-				if keyAuth, err := privateKeyAuth(expanded, cfg.KeyPassphrase); err == nil {
-					methods = append(methods, keyAuth)
-					break // Use first available key
-				}
-			}
-		}
-	}
-
-	// Add password authentication if provided
-	if cfg.Password != "" {
-		methods = append(methods, PasswordAuth(cfg.Password))
-		methods = append(methods, KeyboardInteractiveAuth(cfg.Password))
-	}
+	methods = trySSHConfigAuth(cfg, methods)
+	methods = tryDefaultKeysAuth(cfg, methods)
+	methods = tryPasswordAuth(cfg, methods)
 
 	if len(methods) == 0 {
 		return nil, fmt.Errorf("no authentication methods available")
 	}
 
 	return methods, nil
+}
+
+// trySSHAgentAuth attempts SSH agent authentication.
+func trySSHAgentAuth(cfg AuthConfig, methods []ssh.AuthMethod) []ssh.AuthMethod {
+	if !cfg.UseAgent {
+		return methods
+	}
+	if agentAuth, err := sshAgentAuth(); err == nil {
+		methods = append(methods, agentAuth)
+	}
+	return methods
+}
+
+// tryExplicitKeyAuth attempts authentication with explicitly configured key.
+func tryExplicitKeyAuth(cfg AuthConfig) (ssh.AuthMethod, error) {
+	if cfg.KeyPath == "" {
+		return nil, nil
+	}
+	keyAuth, err := privateKeyAuth(cfg.KeyPath, cfg.KeyPassphrase)
+	if err != nil {
+		return nil, fmt.Errorf("private key auth: %w", err)
+	}
+	return keyAuth, nil
+}
+
+// trySSHConfigAuth attempts authentication using SSH config identity file.
+func trySSHConfigAuth(cfg AuthConfig, methods []ssh.AuthMethod) []ssh.AuthMethod {
+	if cfg.KeyPath != "" || cfg.Host == "" {
+		return methods
+	}
+	configKey := getSSHConfigIdentityFile(cfg.Host)
+	if configKey == "" {
+		return methods
+	}
+	if keyAuth, err := privateKeyAuth(configKey, cfg.KeyPassphrase); err == nil {
+		methods = append(methods, keyAuth)
+	}
+	return methods
+}
+
+// tryDefaultKeysAuth attempts authentication with default SSH keys.
+func tryDefaultKeysAuth(cfg AuthConfig, methods []ssh.AuthMethod) []ssh.AuthMethod {
+	if cfg.KeyPath != "" || cfg.Password != "" || len(methods) > 0 {
+		return methods
+	}
+	defaultKeys := []string{"~/.ssh/id_ed25519", "~/.ssh/id_rsa", "~/.ssh/id_ecdsa"}
+	for _, keyPath := range defaultKeys {
+		expanded := expandPath(keyPath)
+		if _, err := os.Stat(expanded); err != nil {
+			continue
+		}
+		if keyAuth, err := privateKeyAuth(expanded, cfg.KeyPassphrase); err == nil {
+			return append(methods, keyAuth)
+		}
+	}
+	return methods
+}
+
+// tryPasswordAuth adds password authentication methods.
+func tryPasswordAuth(cfg AuthConfig, methods []ssh.AuthMethod) []ssh.AuthMethod {
+	if cfg.Password == "" {
+		return methods
+	}
+	methods = append(methods, PasswordAuth(cfg.Password))
+	methods = append(methods, KeyboardInteractiveAuth(cfg.Password))
+	return methods
 }
 
 // sshAgentAuth returns an SSH agent auth method.
@@ -222,37 +251,41 @@ func matchSSHHostPattern(host, pattern string) bool {
 	return false
 }
 
+// skipWildcards advances past consecutive wildcards and returns new index.
+func skipWildcards(pattern string, i int) int {
+	for i < len(pattern) && pattern[i] == '*' {
+		i++
+	}
+	return i
+}
+
+// matchWildcard attempts to match a wildcard against the host, returning true if matched.
+func matchWildcard(host, pattern string, hostIdx, patIdx int) bool {
+	patIdx = skipWildcards(pattern, patIdx)
+	if patIdx == len(pattern) {
+		return true // Trailing * matches rest
+	}
+	for hostIdx < len(host) {
+		if matchSinglePattern(host[hostIdx:], pattern[patIdx:]) {
+			return true
+		}
+		hostIdx++
+	}
+	return false
+}
+
 // matchSinglePattern matches a single SSH host pattern.
 func matchSinglePattern(host, pattern string) bool {
-	// Simple exact match or * wildcard
-	if pattern == "*" {
-		return true
-	}
-	if pattern == host {
+	if pattern == "*" || pattern == host {
 		return true
 	}
 
-	// Convert SSH pattern to a simple matcher
-	// SSH uses * for any chars and ? for single char
 	i, j := 0, 0
 	for i < len(pattern) && j < len(host) {
 		if pattern[i] == '*' {
-			// Skip consecutive wildcards
-			for i < len(pattern) && pattern[i] == '*' {
-				i++
-			}
-			if i == len(pattern) {
-				return true // Trailing * matches rest
-			}
-			// Find next match
-			for j < len(host) {
-				if matchSinglePattern(host[j:], pattern[i:]) {
-					return true
-				}
-				j++
-			}
-			return false
-		} else if pattern[i] == '?' || pattern[i] == host[j] {
+			return matchWildcard(host, pattern, j, i)
+		}
+		if pattern[i] == '?' || pattern[i] == host[j] {
 			i++
 			j++
 		} else {
@@ -260,10 +293,7 @@ func matchSinglePattern(host, pattern string) bool {
 		}
 	}
 
-	// Check if we consumed both strings
-	for i < len(pattern) && pattern[i] == '*' {
-		i++
-	}
+	i = skipWildcards(pattern, i)
 	return i == len(pattern) && j == len(host)
 }
 

@@ -165,6 +165,9 @@ func (cs *ControlSession) Exec(ctx context.Context, command string) (string, err
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
+	// Drain any pending output from previous commands
+	cs.drainOutputLocked()
+
 	// Use a unique marker to detect command completion
 	marker := fmt.Sprintf("__CTRL_%d__", time.Now().UnixNano())
 	fullCmd := fmt.Sprintf("%s; echo %s $?", command, marker)
@@ -174,9 +177,16 @@ func (cs *ControlSession) Exec(ctx context.Context, command string) (string, err
 		return "", fmt.Errorf("write command: %w", err)
 	}
 
+	// Give the shell time to process the command
+	time.Sleep(50 * time.Millisecond)
+
 	// Read output until marker
 	var output bytes.Buffer
 	buf := make([]byte, 4096)
+
+	// The marker output looks like: "__CTRL_xxx__ 0" or "__CTRL_xxx__ 1"
+	// We need to find "marker + space + digit" to avoid matching the command echo
+	markerPattern := marker + " "
 
 	for {
 		select {
@@ -185,7 +195,7 @@ func (cs *ControlSession) Exec(ctx context.Context, command string) (string, err
 		default:
 		}
 
-		cs.pty.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		cs.pty.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
 		n, err := cs.pty.Read(buf)
 		if err != nil && !os.IsTimeout(err) && err != io.EOF && !isTimeoutError(err) {
 			return output.String(), fmt.Errorf("read output: %w", err)
@@ -194,8 +204,9 @@ func (cs *ControlSession) Exec(ctx context.Context, command string) (string, err
 		if n > 0 {
 			output.Write(buf[:n])
 
-			// Check for marker
-			if strings.Contains(output.String(), marker) {
+			// Check for marker pattern (marker followed by space and exit code)
+			// This avoids matching the command echo which has "marker $?"
+			if strings.Contains(output.String(), markerPattern) {
 				break
 			}
 		}
@@ -213,35 +224,110 @@ func (cs *ControlSession) ExecSimple(command string) (string, error) {
 	return cs.Exec(ctx, command)
 }
 
+// ExecRaw executes a command and returns the raw output without cleaning.
+// Useful for debugging output parsing issues.
+func (cs *ControlSession) ExecRaw(ctx context.Context, command string) (string, error) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
+	// Drain any pending output from previous commands
+	cs.drainOutputLocked()
+
+	// Use a unique marker to detect command completion
+	marker := fmt.Sprintf("__CTRL_%d__", time.Now().UnixNano())
+	fullCmd := fmt.Sprintf("%s; echo %s $?", command, marker)
+
+	// Write command
+	if _, err := cs.pty.WriteString(fullCmd + "\n"); err != nil {
+		return "", fmt.Errorf("write command: %w", err)
+	}
+
+	// Give the shell time to process the command
+	time.Sleep(50 * time.Millisecond)
+
+	// Read output until marker
+	var output bytes.Buffer
+	buf := make([]byte, 4096)
+
+	// The marker output looks like: "__CTRL_xxx__ 0" or "__CTRL_xxx__ 1"
+	// We need to find "marker + space + digit" to avoid matching the command echo
+	markerPattern := marker + " "
+
+	for {
+		select {
+		case <-ctx.Done():
+			return output.String(), ctx.Err()
+		default:
+		}
+
+		cs.pty.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		n, err := cs.pty.Read(buf)
+		if err != nil && !os.IsTimeout(err) && err != io.EOF && !isTimeoutError(err) {
+			return output.String(), fmt.Errorf("read output: %w", err)
+		}
+
+		if n > 0 {
+			output.Write(buf[:n])
+
+			// Check for marker pattern (marker followed by space and exit code)
+			if strings.Contains(output.String(), markerPattern) {
+				break
+			}
+		}
+	}
+
+	// Return raw output without cleaning
+	return output.String(), nil
+}
+
 // cleanOutput removes command echo and marker from output.
 func (cs *ControlSession) cleanOutput(output, command, marker string) string {
 	lines := strings.Split(output, "\n")
 	var result []string
 
-	skipFirst := true
-	for _, line := range lines {
-		// Skip command echo (first line usually)
-		if skipFirst && strings.Contains(line, command[:min(len(command), 20)]) {
-			skipFirst = false
-			continue
+	// Find where the marker line is - everything after it is prompt noise
+	markerIdx := -1
+	for i, line := range lines {
+		if strings.Contains(line, marker+" ") { // marker followed by exit code
+			markerIdx = i
+			break
 		}
-		// Skip marker line
-		if strings.Contains(line, marker) {
-			continue
-		}
-		// Skip empty prompt lines
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || trimmed == "$" || strings.HasSuffix(trimmed, "$ ") {
-			continue
-		}
-		result = append(result, line)
 	}
 
-	return strings.TrimSpace(strings.Join(result, "\n"))
+	for i, line := range lines {
+		// Stop at marker line
+		if markerIdx >= 0 && i >= markerIdx {
+			break
+		}
+
+		// Skip command echo (first non-empty line containing command text)
+		cmdPrefix := command
+		if len(cmdPrefix) > 20 {
+			cmdPrefix = command[:20]
+		}
+		if strings.Contains(line, cmdPrefix) {
+			continue
+		}
+
+		// Skip empty lines
+		trimmed := strings.TrimSpace(strings.ReplaceAll(line, "\r", ""))
+		if trimmed == "" {
+			continue
+		}
+
+		result = append(result, trimmed)
+	}
+
+	return strings.Join(result, "\n")
 }
 
 // drainOutput drains any pending output from the PTY.
 func (cs *ControlSession) drainOutput() {
+	cs.drainOutputLocked()
+}
+
+// drainOutputLocked drains pending output, caller must hold the lock.
+func (cs *ControlSession) drainOutputLocked() {
 	buf := make([]byte, 4096)
 	for i := 0; i < 10; i++ {
 		cs.pty.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
