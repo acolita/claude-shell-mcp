@@ -3,10 +3,14 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realfs"
+	"github.com/acolita/claude-shell-mcp/internal/ports"
 )
 
 // TunnelConfig contains the configuration needed to recreate a tunnel.
@@ -35,31 +39,63 @@ type SessionStore struct {
 	path     string
 	sessions map[string]SessionMetadata
 	mu       sync.RWMutex
+	fs       ports.FileSystem
+}
+
+// SessionStoreOption configures a SessionStore.
+type SessionStoreOption func(*SessionStore)
+
+// WithFileSystem sets the filesystem used by SessionStore.
+func WithFileSystem(fs ports.FileSystem) SessionStoreOption {
+	return func(s *SessionStore) {
+		s.fs = fs
+	}
+}
+
+// WithStorePath sets a custom storage path (for testing).
+func WithStorePath(path string) SessionStoreOption {
+	return func(s *SessionStore) {
+		s.path = path
+	}
 }
 
 // NewSessionStore creates a session store at the default path.
-func NewSessionStore() *SessionStore {
-	// Use ~/.cache/claude-shell-mcp/sessions.json
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "/tmp"
-	}
-
-	cacheDir := filepath.Join(home, ".cache", "claude-shell-mcp")
-	if err := os.MkdirAll(cacheDir, 0700); err != nil {
-		slog.Warn("failed to create cache dir, using /tmp", slog.String("error", err.Error()))
-		cacheDir = "/tmp"
-	}
-
+func NewSessionStore(opts ...SessionStoreOption) *SessionStore {
 	store := &SessionStore{
-		path:     filepath.Join(cacheDir, "sessions.json"),
 		sessions: make(map[string]SessionMetadata),
+		fs:       realfs.New(), // default to real filesystem
+	}
+
+	// Apply options first so we can use the configured filesystem
+	for _, opt := range opts {
+		opt(store)
+	}
+
+	// If no custom path was set, determine the default path
+	if store.path == "" {
+		store.path = store.defaultPath()
 	}
 
 	// Load existing sessions from disk
 	store.load()
 
 	return store
+}
+
+// defaultPath determines the default storage path using the configured filesystem.
+func (s *SessionStore) defaultPath() string {
+	home, err := s.fs.UserHomeDir()
+	if err != nil {
+		home = "/tmp"
+	}
+
+	cacheDir := filepath.Join(home, ".cache", "claude-shell-mcp")
+	if err := s.fs.MkdirAll(cacheDir, 0700); err != nil {
+		slog.Warn("failed to create cache dir, using /tmp", slog.String("error", err.Error()))
+		cacheDir = "/tmp"
+	}
+
+	return filepath.Join(cacheDir, "sessions.json")
 }
 
 // Save persists a session's metadata for later recovery.
@@ -102,9 +138,9 @@ func (s *SessionStore) Delete(id string) {
 
 // load reads sessions from disk.
 func (s *SessionStore) load() {
-	data, err := os.ReadFile(s.path)
+	data, err := s.fs.ReadFile(s.path)
 	if err != nil {
-		if !os.IsNotExist(err) {
+		if !errors.Is(err, fs.ErrNotExist) {
 			slog.Warn("failed to load session store", slog.String("error", err.Error()))
 		}
 		return
@@ -124,7 +160,7 @@ func (s *SessionStore) persist() {
 		return
 	}
 
-	if err := os.WriteFile(s.path, data, 0600); err != nil {
+	if err := s.fs.WriteFile(s.path, data, 0600); err != nil {
 		slog.Warn("failed to write session store", slog.String("error", err.Error()))
 	}
 }

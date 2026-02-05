@@ -4,6 +4,9 @@ package security
 import (
 	"sync"
 	"time"
+
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realclock"
+	"github.com/acolita/claude-shell-mcp/internal/ports"
 )
 
 // SecureCache stores sensitive credentials with TTL-based expiration.
@@ -13,19 +16,38 @@ type SecureCache struct {
 	ttl       time.Duration
 	mu        sync.Mutex
 	cleared   bool
+	clock     ports.Clock
+}
+
+// SecureCacheOption configures a SecureCache.
+type SecureCacheOption func(*SecureCache)
+
+// WithClock sets the clock used by SecureCache.
+func WithClock(clock ports.Clock) SecureCacheOption {
+	return func(sc *SecureCache) {
+		sc.clock = clock
+	}
 }
 
 // NewSecureCache creates a new secure cache with the given TTL.
-func NewSecureCache(data []byte, ttl time.Duration) *SecureCache {
+func NewSecureCache(data []byte, ttl time.Duration, opts ...SecureCacheOption) *SecureCache {
 	// Make a copy of the data
 	dataCopy := make([]byte, len(data))
 	copy(dataCopy, data)
 
-	return &SecureCache{
-		data:      dataCopy,
-		createdAt: time.Now(),
-		ttl:       ttl,
+	sc := &SecureCache{
+		data:  dataCopy,
+		ttl:   ttl,
+		clock: realclock.New(), // default to real clock
 	}
+
+	for _, opt := range opts {
+		opt(sc)
+	}
+
+	sc.createdAt = sc.clock.Now()
+
+	return sc
 }
 
 // Get returns the cached data if still valid, or nil if expired.
@@ -37,7 +59,7 @@ func (sc *SecureCache) Get() []byte {
 		return nil
 	}
 
-	if time.Since(sc.createdAt) > sc.ttl {
+	if sc.clock.Now().Sub(sc.createdAt) > sc.ttl {
 		sc.clear()
 		return nil
 	}
@@ -57,7 +79,7 @@ func (sc *SecureCache) IsValid() bool {
 		return false
 	}
 
-	if time.Since(sc.createdAt) > sc.ttl {
+	if sc.clock.Now().Sub(sc.createdAt) > sc.ttl {
 		sc.clear()
 		return false
 	}
@@ -74,7 +96,7 @@ func (sc *SecureCache) ExpiresIn() time.Duration {
 		return 0
 	}
 
-	remaining := sc.ttl - time.Since(sc.createdAt)
+	remaining := sc.ttl - sc.clock.Now().Sub(sc.createdAt)
 	if remaining < 0 {
 		return 0
 	}
@@ -102,14 +124,32 @@ type SudoCache struct {
 	caches map[string]*SecureCache // session_id -> cache
 	ttl    time.Duration
 	mu     sync.RWMutex
+	clock  ports.Clock
+}
+
+// SudoCacheOption configures a SudoCache.
+type SudoCacheOption func(*SudoCache)
+
+// WithSudoCacheClock sets the clock used by SudoCache.
+func WithSudoCacheClock(clock ports.Clock) SudoCacheOption {
+	return func(c *SudoCache) {
+		c.clock = clock
+	}
 }
 
 // NewSudoCache creates a new sudo cache manager with the given TTL.
-func NewSudoCache(ttl time.Duration) *SudoCache {
-	return &SudoCache{
+func NewSudoCache(ttl time.Duration, opts ...SudoCacheOption) *SudoCache {
+	c := &SudoCache{
 		caches: make(map[string]*SecureCache),
 		ttl:    ttl,
+		clock:  realclock.New(), // default to real clock
 	}
+
+	for _, opt := range opts {
+		opt(c)
+	}
+
+	return c
 }
 
 // Set stores a sudo password for a session.
@@ -122,7 +162,7 @@ func (c *SudoCache) Set(sessionID string, password []byte) {
 		existing.Clear()
 	}
 
-	c.caches[sessionID] = NewSecureCache(password, c.ttl)
+	c.caches[sessionID] = NewSecureCache(password, c.ttl, WithClock(c.clock))
 }
 
 // Get retrieves the cached sudo password for a session.
