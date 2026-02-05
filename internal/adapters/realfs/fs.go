@@ -62,5 +62,10 @@ func (f *FS) Getenv(key string) string {
 	return os.Getenv(key)
 }
 
+// Getwd returns the current working directory.
+func (f *FS) Getwd() (string, error) {
+	return os.Getwd()
+}
+
 // Ensure FS implements ports.FileSystem.
 var _ ports.FileSystem = (*FS)(nil)

@@ -33,4 +33,7 @@ type FileSystem interface {
 
 	// Getenv retrieves the value of the environment variable named by the key.
 	Getenv(key string) string
+
+	// Getwd returns the current working directory.
+	Getwd() (string, error)
 }

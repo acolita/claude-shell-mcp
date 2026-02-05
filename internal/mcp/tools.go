@@ -7,15 +7,19 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/acolita/claude-shell-mcp/internal/session"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
+// timeNow is a variable for testing - allows injecting fake time.
+var timeNow = time.Now
+
 const (
-	// maxOutputBytes is the maximum output size before automatic truncation.
-	// This prevents MCP protocol errors when output exceeds token limits.
-	maxOutputBytes = 100 * 1024 // 100KB
+	// saveToFileThreshold is the size at which we save full output to a file.
+	// Output exceeding this is saved to .claude-shell-mcp/ and only the file path is returned.
+	saveToFileThreshold = 50 * 1024 // 50KB
 )
 
 // heredocPattern detects heredoc syntax which is not supported over PTY.
@@ -32,6 +36,7 @@ func (s *Server) registerTools() {
 	s.mcpServer.AddTool(shellInterruptTool(), s.handleShellInterrupt)
 	s.mcpServer.AddTool(shellSessionStatusTool(), s.handleShellSessionStatus)
 	s.mcpServer.AddTool(shellSessionCloseTool(), s.handleShellSessionClose)
+	s.mcpServer.AddTool(shellSudoAuthTool(), s.handleShellSudoAuth)
 
 	// Register file transfer tools
 	s.registerFileTransferTools()
@@ -129,10 +134,10 @@ When output is truncated, the response includes:
 - shown_lines: Number of lines actually returned
 Example: shell_exec(command="cat /var/log/syslog", tail_lines=50) returns last 50 lines with truncation info.
 
-IMPORTANT: When status is "awaiting_input" with prompt_type "password":
-- If sudo password is cached (from previous cache_for_sudo=true), it will be auto-injected
-- Otherwise, you MUST ask the user for their password before calling shell_provide_input
-- NEVER call shell_provide_input with an empty string for passwords
+SUDO PASSWORD HANDLING:
+Password prompts are auto-injected from server configuration (sudo_password_env).
+If a password prompt still appears as "awaiting_input", call shell_sudo_auth(session_id)
+to inject the configured password. Do NOT ask the user for passwords.
 
 HEREDOCS NOT SUPPORTED: Commands with heredocs (<<EOF, <<'EOF', <<"EOF", <<-EOF) are NOT supported and will be rejected. Heredocs cause PTY issues due to shell continuation prompts.
 
@@ -162,19 +167,15 @@ For multi-line file content, use these alternatives:
 
 func shellProvideInputTool() mcp.Tool {
 	return mcp.NewTool("shell_provide_input",
-		mcp.WithDescription(`Resume a paused session by providing input (password, confirmation, etc.).
+		mcp.WithDescription(`Resume a paused session by providing non-sensitive input (confirmations, interactive prompts).
 
 Use this after shell_exec returns status "awaiting_input". A newline is automatically appended to the input.
 
-For sudo passwords, set cache_for_sudo=true to cache the password for subsequent sudo commands in this session (cached for 5 minutes).
-
 Returns the same status types as shell_exec - the command may complete, request more input, or timeout.
 
-CRITICAL: For password prompts (prompt_type: "password"), you MUST:
-1. First check if a cached sudo password exists (shell_session_status shows sudo_cached: true)
-2. If no cached password, ASK THE USER for their password BEFORE calling this tool
-3. NEVER send an empty string for password prompts - this will always fail
-4. Use cache_for_sudo=true when providing a sudo password to avoid repeated prompts
+IMPORTANT: Do NOT use this tool for password prompts. Passwords are auto-injected from
+server configuration (sudo_password_env). If a password prompt appears as awaiting_input,
+it means auto-injection failed and the user needs to configure sudo_password_env.
 
 For confirmation prompts (prompt_type: "confirmation"), provide "yes", "y", "Y", or "n" as appropriate.
 For interactive apps (prompt_type: "interactive"), provide the appropriate command (e.g., ":q!" for vim).`),
@@ -188,6 +189,24 @@ For interactive apps (prompt_type: "interactive"), provide the appropriate comma
 		),
 		mcp.WithBoolean("cache_for_sudo",
 			mcp.Description("Cache this input for subsequent sudo prompts (default: false)"),
+		),
+	)
+}
+
+func shellSudoAuthTool() mcp.Tool {
+	return mcp.NewTool("shell_sudo_auth",
+		mcp.WithDescription(`Authenticate a sudo password prompt using the server's pre-configured credentials.
+
+Call this when shell_exec returns status "awaiting_input" with prompt_type "password".
+The password is read from the server's sudo_password_env configuration — it never
+passes through the LLM.
+
+If this tool returns an error, inform the user that they need to configure
+sudo_password_env for the server in config.yaml and set the corresponding
+environment variable.`),
+		mcp.WithString("session_id",
+			mcp.Required(),
+			mcp.Description(descSessionID),
 		),
 	)
 }
@@ -208,7 +227,7 @@ ONLY use shell_send_raw when you need to send:
 === WHEN NOT TO USE THIS TOOL ===
 DO NOT use shell_send_raw for:
 - Normal text input (use shell_provide_input instead)
-- Passwords (use shell_provide_input with cache_for_sudo)
+- Passwords (handled automatically via server config, never sent manually)
 - Confirmations like "yes" or "Y" (use shell_provide_input)
 - Any input where you want a newline appended automatically
 
@@ -389,25 +408,36 @@ func (s *Server) handleShellSessionList(ctx context.Context, req mcp.CallToolReq
 	return jsonResult(result)
 }
 
-// tryCachedSudoInjection attempts to auto-inject a cached sudo password.
+// tryCachedSudoInjection attempts to auto-inject a sudo password.
+// It checks (in order): the sudo cache, then the server's sudo_password_env config.
 // Returns updated result and any error that occurred.
 func (s *Server) tryCachedSudoInjection(sessionID string, sess *session.Session, result *session.ExecResult) (*session.ExecResult, error) {
 	if result.Status != "awaiting_input" || result.PromptType != "password" {
 		return result, nil
 	}
 
+	// 1. Check the in-memory sudo cache first
 	cachedPwd := s.sudoCache.Get(sessionID)
+
+	// 2. Fall back to server config's sudo_password_env
+	if cachedPwd == nil {
+		cachedPwd = s.lookupSudoPasswordFromConfig(sess.Host)
+	}
+
 	if cachedPwd == nil {
 		return result, nil
 	}
 
-	slog.Info("auto-injecting cached sudo password", slog.String("session_id", sessionID))
-	s.recordingManager.RecordInput(sessionID, string(cachedPwd), true)
+	slog.Info("auto-injecting sudo password", slog.String("session_id", sessionID))
+	s.recordingManager.RecordInput(sessionID, "***", true)
 
 	newResult, err := sess.ProvideInput(string(cachedPwd))
 	if err != nil {
 		return nil, err
 	}
+
+	// Cache for subsequent sudo calls in this session
+	s.sudoCache.Set(sessionID, cachedPwd)
 
 	s.recordingManager.RecordOutput(sessionID, newResult.Stdout)
 	newResult.SudoAuthenticated = true
@@ -415,25 +445,95 @@ func (s *Server) tryCachedSudoInjection(sessionID string, sess *session.Session,
 	return newResult, nil
 }
 
-// applyAutoTruncation truncates output that exceeds maxOutputBytes.
-func applyAutoTruncation(sessionID string, result *session.ExecResult) {
-	if len(result.Stdout) <= maxOutputBytes {
+// lookupSudoPasswordFromConfig reads the sudo password from a server's configured env var.
+func (s *Server) lookupSudoPasswordFromConfig(host string) []byte {
+	if s.config == nil || host == "" {
+		return nil
+	}
+
+	for _, srv := range s.config.Servers {
+		if srv.Host != host && srv.Name != host {
+			continue
+		}
+		if srv.SudoPasswordEnv == "" {
+			return nil
+		}
+		pwd := s.fs.Getenv(srv.SudoPasswordEnv)
+		if pwd == "" {
+			slog.Warn("sudo_password_env configured but env var is empty",
+				slog.String("server", srv.Name),
+				slog.String("env_var", srv.SudoPasswordEnv),
+			)
+			return nil
+		}
+		return []byte(pwd)
+	}
+
+	return nil
+}
+
+// applyAutoTruncation saves large outputs to a file and clears stdout.
+// The LLM must explicitly read the file to get the content.
+func (s *Server) applyAutoTruncation(sessionID string, result *session.ExecResult) {
+	outputLen := len(result.Stdout)
+	if outputLen <= saveToFileThreshold {
 		return
 	}
 
-	result.TotalBytes = len(result.Stdout)
-	result.Stdout = result.Stdout[:maxOutputBytes]
-	result.TruncatedBytes = maxOutputBytes
+	result.TotalBytes = outputLen
 	result.Truncated = true
+
+	outputFile, err := s.saveOutputToFile(sessionID, result.Stdout)
+	if err != nil {
+		slog.Warn("failed to save output to file",
+			slog.String("session_id", sessionID),
+			slog.String("error", err.Error()),
+		)
+		// Clear stdout completely - we can't return it inline
+		result.Stdout = ""
+		result.Warning = fmt.Sprintf(
+			"Output too large (%d bytes) and failed to save to file: %v. Use shell_file_get for large outputs.",
+			outputLen, err,
+		)
+		return
+	}
+
+	// Clear stdout - only return the file path
+	result.Stdout = ""
+	result.OutputFile = outputFile
 	result.Warning = fmt.Sprintf(
-		"Output truncated from %d bytes to %d bytes. For large files, use shell_file_get instead, or use tail_lines/head_lines parameters to limit output.",
-		result.TotalBytes, maxOutputBytes,
+		"Output too large (%d bytes). Full output saved to: %s. Read the file to analyze the content.",
+		outputLen, outputFile,
 	)
-	slog.Warn("output auto-truncated",
+	slog.Info("large output saved to file",
 		slog.String("session_id", sessionID),
-		slog.Int("original_bytes", result.TotalBytes),
-		slog.Int("truncated_bytes", maxOutputBytes),
+		slog.Int("total_bytes", outputLen),
+		slog.String("output_file", outputFile),
 	)
+}
+
+// saveOutputToFile saves command output to a file in the working directory and returns the path.
+func (s *Server) saveOutputToFile(sessionID, output string) (string, error) {
+	cwd, err := s.fs.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get working dir: %w", err)
+	}
+
+	outputDir := cwd + "/.claude-shell-mcp"
+	if err := s.fs.MkdirAll(outputDir, 0755); err != nil {
+		return "", fmt.Errorf("create output dir: %w", err)
+	}
+
+	// Generate unique filename: session_timestamp.txt
+	timestamp := fmt.Sprintf("%d", timeNow().UnixMilli())
+	filename := fmt.Sprintf("%s_%s.txt", sessionID, timestamp)
+	filepath := outputDir + "/" + filename
+
+	if err := s.fs.WriteFile(filepath, []byte(output), 0644); err != nil {
+		return "", fmt.Errorf("write output file: %w", err)
+	}
+
+	return filepath, nil
 }
 
 // validateExecParams validates parameters for shell_exec.
@@ -499,7 +599,7 @@ func (s *Server) handleShellExec(ctx context.Context, req mcp.CallToolRequest) (
 		result.Stdout, result.Truncated, result.TotalLines, result.ShownLines = truncateOutput(result.Stdout, tailLines, headLines)
 	}
 
-	applyAutoTruncation(sessionID, result)
+	s.applyAutoTruncation(sessionID, result)
 
 	return jsonResult(result)
 }
@@ -550,22 +650,49 @@ func (s *Server) handleShellProvideInput(ctx context.Context, req mcp.CallToolRe
 		result.SudoExpiresInSeconds = int(expiresIn.Seconds())
 	}
 
-	// Auto-truncate if output exceeds maxOutputBytes to prevent MCP protocol errors
-	if len(result.Stdout) > maxOutputBytes {
-		result.TotalBytes = len(result.Stdout)
-		result.Stdout = result.Stdout[:maxOutputBytes]
-		result.TruncatedBytes = maxOutputBytes
-		result.Truncated = true
-		result.Warning = fmt.Sprintf(
-			"Output truncated from %d bytes to %d bytes. For large files, use shell_file_get instead, or use tail_lines/head_lines parameters to limit output.",
-			result.TotalBytes, maxOutputBytes,
-		)
-		slog.Warn("output auto-truncated",
-			slog.String("session_id", sessionID),
-			slog.Int("original_bytes", result.TotalBytes),
-			slog.Int("truncated_bytes", maxOutputBytes),
-		)
+	s.applyAutoTruncation(sessionID, result)
+
+	return jsonResult(result)
+}
+
+func (s *Server) handleShellSudoAuth(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	sessionID := mcp.ParseString(req, "session_id", "")
+
+	if sessionID == "" {
+		return mcp.NewToolResultError(errSessionIDRequired), nil
 	}
+
+	sess, err := s.sessionManager.Get(sessionID)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	// Look up password from config
+	pwd := s.lookupSudoPasswordFromConfig(sess.Host)
+	if pwd == nil {
+		return mcp.NewToolResultError(
+			"No sudo password configured for this server. " +
+				"Set sudo_password_env in the server's config.yaml entry and provide the " +
+				"corresponding environment variable when starting the MCP server.",
+		), nil
+	}
+
+	slog.Info("sudo_auth: injecting password from config", slog.String("session_id", sessionID))
+	s.recordingManager.RecordInput(sessionID, "***", true)
+
+	result, err := sess.ProvideInput(string(pwd))
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	// Cache for subsequent sudo calls
+	s.sudoCache.Set(sessionID, pwd)
+
+	s.recordingManager.RecordOutput(sessionID, result.Stdout)
+	result.SudoAuthenticated = true
+	result.SudoExpiresInSeconds = int(s.sudoCache.ExpiresIn(sessionID).Seconds())
+
+	s.applyAutoTruncation(sessionID, result)
 
 	return jsonResult(result)
 }
@@ -602,17 +729,7 @@ func (s *Server) handleShellSendRaw(ctx context.Context, req mcp.CallToolRequest
 	// Record output
 	s.recordingManager.RecordOutput(sessionID, result.Stdout)
 
-	// Auto-truncate if output exceeds maxOutputBytes
-	if len(result.Stdout) > maxOutputBytes {
-		result.TotalBytes = len(result.Stdout)
-		result.Stdout = result.Stdout[:maxOutputBytes]
-		result.TruncatedBytes = maxOutputBytes
-		result.Truncated = true
-		result.Warning = fmt.Sprintf(
-			"Output truncated from %d bytes to %d bytes.",
-			result.TotalBytes, maxOutputBytes,
-		)
-	}
+	s.applyAutoTruncation(sessionID, result)
 
 	return jsonResult(result)
 }

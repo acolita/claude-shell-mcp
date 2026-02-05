@@ -19,6 +19,7 @@ type FS struct {
 	files   map[string]*fakeFile
 	dirs    map[string]bool
 	homeDir string
+	cwd     string
 	env     map[string]string
 }
 
@@ -34,6 +35,7 @@ func New() *FS {
 		files:   make(map[string]*fakeFile),
 		dirs:    map[string]bool{"/": true},
 		homeDir: "/home/test",
+		cwd:     "/project",
 		env:     make(map[string]string),
 	}
 }
@@ -214,6 +216,13 @@ func (f *FS) Getenv(key string) string {
 	return f.env[key]
 }
 
+// Getwd returns the current working directory.
+func (f *FS) Getwd() (string, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.cwd, nil
+}
+
 // --- Test helpers ---
 
 // AddFile adds a file to the fake filesystem.
@@ -262,6 +271,13 @@ func (f *FS) SetEnv(key, value string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.env[key] = value
+}
+
+// SetCwd sets the current working directory returned by Getwd.
+func (f *FS) SetCwd(dir string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cwd = dir
 }
 
 // Files returns a sorted list of all file paths.

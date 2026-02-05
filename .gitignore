@@ -26,3 +26,6 @@ config.yaml
 *.pem
 *.key
 .env
+
+# Large output files
+.claude-shell-mcp/

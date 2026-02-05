@@ -316,6 +316,9 @@ func (s *Session) applyServerAuthConfig(authCfg *ssh.AuthConfig) {
 		if srv.Auth.PassphraseEnv != "" {
 			authCfg.KeyPassphrase = os.Getenv(srv.Auth.PassphraseEnv)
 		}
+		if srv.Auth.PasswordEnv != "" {
+			authCfg.Password = os.Getenv(srv.Auth.PasswordEnv)
+		}
 		break
 	}
 }
@@ -1962,6 +1965,7 @@ type ExecResult struct {
 	TotalBytes     int    `json:"total_bytes,omitempty"`      // Original output size in bytes
 	TruncatedBytes int    `json:"truncated_bytes,omitempty"`  // Bytes shown after truncation
 	Warning        string `json:"warning,omitempty"`          // Warning message for large outputs
+	OutputFile     string `json:"output_file,omitempty"`      // Path to file with full output (when too large)
 	// Async output from background processes (not from this command)
 	AsyncOutput string `json:"async_output,omitempty"`
 	// Command ID used for marker-based output isolation

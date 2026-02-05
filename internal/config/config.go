@@ -22,19 +22,21 @@ type Config struct {
 
 // ServerConfig defines an SSH server connection.
 type ServerConfig struct {
-	Name    string     `yaml:"name"`
-	Host    string     `yaml:"host"`
-	Port    int        `yaml:"port"`
-	User    string     `yaml:"user"`
-	KeyPath string     `yaml:"key_path"`
-	Auth    AuthConfig `yaml:"auth"`
+	Name            string     `yaml:"name"`
+	Host            string     `yaml:"host"`
+	Port            int        `yaml:"port"`
+	User            string     `yaml:"user"`
+	KeyPath         string     `yaml:"key_path"`
+	Auth            AuthConfig `yaml:"auth"`
+	SudoPasswordEnv string     `yaml:"sudo_password_env"` // env var containing sudo password
 }
 
 // AuthConfig defines authentication settings.
 type AuthConfig struct {
 	Type          string `yaml:"type"`           // "key" or "password"
 	Path          string `yaml:"path"`           // path to key file
-	PassphraseEnv string `yaml:"passphrase_env"` // env var containing passphrase
+	PassphraseEnv string `yaml:"passphrase_env"` // env var containing key passphrase
+	PasswordEnv   string `yaml:"password_env"`   // env var containing SSH password
 }
 
 // SecurityConfig defines security settings.
