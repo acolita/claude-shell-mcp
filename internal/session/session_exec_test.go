@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/acolita/claude-shell-mcp/internal/config"
+	"github.com/acolita/claude-shell-mcp/internal/ssh"
 	"github.com/acolita/claude-shell-mcp/internal/testing/fakes/fakeclock"
 	"github.com/acolita/claude-shell-mcp/internal/testing/fakes/fakepty"
 	"github.com/acolita/claude-shell-mcp/internal/testing/fakes/fakerand"
@@ -380,4 +381,168 @@ func TestSession_MultipleCommands(t *testing.T) {
 	if result2.Status != "completed" {
 		t.Errorf("Second Status = %q, want completed", result2.Status)
 	}
+}
+
+// SSH validation and configuration tests
+
+func TestSession_ValidateSSHConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		session *Session
+		wantErr string
+	}{
+		{
+			name:    "missing host",
+			session: &Session{Mode: "ssh", User: "user"},
+			wantErr: "host is required",
+		},
+		{
+			name:    "missing user",
+			session: &Session{Mode: "ssh", Host: "example.com"},
+			wantErr: "user is required",
+		},
+		{
+			name:    "valid config",
+			session: &Session{Mode: "ssh", Host: "example.com", User: "user"},
+			wantErr: "",
+		},
+		{
+			name:    "default port",
+			session: &Session{Mode: "ssh", Host: "example.com", User: "user", Port: 0},
+			wantErr: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.session.validateSSHConfig()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				// Check that port was defaulted
+				if tt.session.Port == 0 {
+					t.Error("port should be defaulted to 22")
+				}
+			} else {
+				if err == nil {
+					t.Errorf("expected error containing %q", tt.wantErr)
+				} else if !contains(err.Error(), tt.wantErr) {
+					t.Errorf("error = %q, want containing %q", err.Error(), tt.wantErr)
+				}
+			}
+		})
+	}
+}
+
+func TestSession_BuildSSHAuthConfig(t *testing.T) {
+	// Test with password
+	sess := &Session{
+		Host:     "example.com",
+		User:     "user",
+		Password: "secret",
+	}
+	authCfg := sess.buildSSHAuthConfig()
+
+	if authCfg.Password != "secret" {
+		t.Errorf("Password = %q, want %q", authCfg.Password, "secret")
+	}
+	if authCfg.Host != "example.com" {
+		t.Errorf("Host = %q, want %q", authCfg.Host, "example.com")
+	}
+	if !authCfg.UseAgent {
+		t.Error("UseAgent should be true by default")
+	}
+
+	// Test with key path
+	sess2 := &Session{
+		Host:    "example.com",
+		User:    "user",
+		KeyPath: "/home/user/.ssh/id_ed25519",
+	}
+	authCfg2 := sess2.buildSSHAuthConfig()
+
+	if authCfg2.KeyPath != "/home/user/.ssh/id_ed25519" {
+		t.Errorf("KeyPath = %q, want %q", authCfg2.KeyPath, "/home/user/.ssh/id_ed25519")
+	}
+}
+
+func TestSession_ApplyServerAuthConfig(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Servers = []config.ServerConfig{
+		{
+			Name:    "prod",
+			Host:    "prod.example.com",
+			KeyPath: "/keys/prod_key",
+		},
+		{
+			Name: "staging",
+			Host: "staging.example.com",
+			Auth: config.AuthConfig{
+				PassphraseEnv: "SSH_PASSPHRASE",
+			},
+		},
+	}
+
+	// Test matching by host
+	sess := &Session{
+		Host:   "prod.example.com",
+		config: cfg,
+	}
+	authCfg := &ssh.AuthConfig{}
+	sess.applyServerAuthConfig(authCfg)
+
+	if authCfg.KeyPath != "/keys/prod_key" {
+		t.Errorf("KeyPath = %q, want %q", authCfg.KeyPath, "/keys/prod_key")
+	}
+
+	// Test matching by name
+	sess2 := &Session{
+		Host:   "prod", // Match by name
+		config: cfg,
+	}
+	authCfg2 := &ssh.AuthConfig{}
+	sess2.applyServerAuthConfig(authCfg2)
+
+	if authCfg2.KeyPath != "/keys/prod_key" {
+		t.Errorf("KeyPath = %q, want %q", authCfg2.KeyPath, "/keys/prod_key")
+	}
+}
+
+func TestSession_ShellPromptCommand(t *testing.T) {
+	tests := []struct {
+		name  string
+		shell string
+		want  string
+	}{
+		{"bash", "/bin/bash", "PS1='$ '"},
+		{"zsh", "/bin/zsh", "PROMPT='$ '"},          // zsh uses PROMPT not PS1
+		{"sh", "/bin/sh", "PS1='$ '"},
+		{"fish", "/usr/bin/fish", "function fish_prompt"}, // fish uses function syntax
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sess := &Session{Shell: tt.shell}
+			got := sess.shellPromptCommand()
+			if !contains(got, tt.want) {
+				t.Errorf("shellPromptCommand() = %q, want containing %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// Helper function
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
+}
+
+func findSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
