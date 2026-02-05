@@ -88,6 +88,51 @@ type Session struct {
 	controlSession *ControlSession
 }
 
+// SessionOption configures a Session.
+type SessionOption func(*Session)
+
+// WithPTY sets the PTY for a session. Use this in tests with a fake PTY.
+func WithPTY(pty PTY) SessionOption {
+	return func(s *Session) {
+		s.pty = pty
+	}
+}
+
+// WithSessionClock sets the clock for a session.
+func WithSessionClock(clock ports.Clock) SessionOption {
+	return func(s *Session) {
+		s.clock = clock
+	}
+}
+
+// WithSessionRandom sets the random source for a session.
+func WithSessionRandom(random ports.Random) SessionOption {
+	return func(s *Session) {
+		s.random = random
+	}
+}
+
+// WithConfig sets the config for a session.
+func WithConfig(cfg *config.Config) SessionOption {
+	return func(s *Session) {
+		s.config = cfg
+	}
+}
+
+// NewSession creates a new session with the given options.
+// This is primarily for testing - production code uses Manager.Create().
+func NewSession(id string, mode string, opts ...SessionOption) *Session {
+	s := &Session{
+		ID:    id,
+		Mode:  mode,
+		State: StateIdle,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
 // Initialize initializes the session with a PTY.
 func (s *Session) Initialize() error {
 	s.mu.Lock()
@@ -111,6 +156,14 @@ func (s *Session) Initialize() error {
 				return fmt.Errorf("add custom pattern %s: %w", p.Name, err)
 			}
 		}
+	}
+
+	// If PTY is already injected (e.g., for testing), skip PTY creation
+	if s.pty != nil {
+		s.State = StateIdle
+		s.CreatedAt = s.clock.Now()
+		s.LastUsed = s.clock.Now()
+		return nil
 	}
 
 	if s.Mode == "ssh" {
