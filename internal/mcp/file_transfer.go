@@ -595,9 +595,14 @@ func writeSSHFile(client *sftp.Client, remotePath, dir string, data []byte, opts
 		return mcp.NewToolResultError(fmt.Sprintf("upload temp file: %v", err))
 	}
 
-	if err := client.Rename(tempPath, remotePath); err != nil {
-		client.Remove(tempPath)
-		return mcp.NewToolResultError(fmt.Sprintf("rename to final path: %v", err))
+	if err := client.PosixRename(tempPath, remotePath); err != nil {
+		// Fallback for servers without posix-rename@openssh.com extension:
+		// remove destination then standard rename
+		client.Remove(remotePath)
+		if err := client.Rename(tempPath, remotePath); err != nil {
+			client.Remove(tempPath)
+			return mcp.NewToolResultError(fmt.Sprintf("rename to final path: %v", err))
+		}
 	}
 	result.AtomicWrite = true
 	return nil

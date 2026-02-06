@@ -165,6 +165,8 @@ func (c *Client) Remove(path string) error {
 }
 
 // Rename renames a file or directory.
+// Note: SFTP Rename fails if the destination already exists.
+// Use PosixRename for atomic overwrite semantics.
 func (c *Client) Rename(oldPath, newPath string) error {
 	if err := c.ensureConnected(); err != nil {
 		return err
@@ -174,6 +176,20 @@ func (c *Client) Rename(oldPath, newPath string) error {
 	defer c.mu.Unlock()
 
 	return c.sftpClient.Rename(oldPath, newPath)
+}
+
+// PosixRename renames a file using the posix-rename@openssh.com extension,
+// which atomically replaces the destination if it already exists.
+// Supported by all modern OpenSSH servers (since 4.8, 2008).
+func (c *Client) PosixRename(oldPath, newPath string) error {
+	if err := c.ensureConnected(); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.sftpClient.PosixRename(oldPath, newPath)
 }
 
 // Chmod changes the permissions of a file.

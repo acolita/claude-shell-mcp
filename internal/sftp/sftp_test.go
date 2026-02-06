@@ -346,6 +346,11 @@ func TestAllMethods_FailOnClosedClient(t *testing.T) {
 		assertErrorContains(t, err, wantErr)
 	})
 
+	t.Run("PosixRename", func(t *testing.T) {
+		err := client.PosixRename("/old", "/new")
+		assertErrorContains(t, err, wantErr)
+	})
+
 	t.Run("Chmod", func(t *testing.T) {
 		err := client.Chmod("/path", 0644)
 		assertErrorContains(t, err, wantErr)
@@ -467,6 +472,12 @@ func TestAllMethods_FailOnNilSSHConn(t *testing.T) {
 	t.Run("Rename", func(t *testing.T) {
 		client := NewClient(nil)
 		err := client.Rename("/old", "/new")
+		assertErrorContains(t, err, wantErr)
+	})
+
+	t.Run("PosixRename", func(t *testing.T) {
+		client := NewClient(nil)
+		err := client.PosixRename("/old", "/new")
 		assertErrorContains(t, err, wantErr)
 	})
 
