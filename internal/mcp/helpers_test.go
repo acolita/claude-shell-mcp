@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/acolita/claude-shell-mcp/internal/config"
+	"github.com/acolita/claude-shell-mcp/internal/testing/fakes/fakeclock"
 	"github.com/acolita/claude-shell-mcp/internal/testing/fakes/fakefs"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
@@ -891,16 +892,13 @@ func TestHelperPreserveLocalTimestamp(t *testing.T) {
 // --- saveOutputToFile (via Server with fakefs) ---
 
 func TestHelperSaveOutputToFile(t *testing.T) {
-	originalTimeNow := timeNow
-	defer func() { timeNow = originalTimeNow }()
-
 	fixedTime := time.Unix(1700000000, 0)
-	timeNow = func() time.Time { return fixedTime }
+	fc := fakeclock.New(fixedTime)
 
 	fakeFS := fakefs.New()
 	fakeFS.SetCwd("/workspace")
 	cfg := config.DefaultConfig()
-	srv := NewServer(cfg, WithFileSystem(fakeFS))
+	srv := NewServer(cfg, WithFileSystem(fakeFS), WithClock(fc))
 
 	path, err := srv.saveOutputToFile("sess_abc", "big output content")
 	if err != nil {

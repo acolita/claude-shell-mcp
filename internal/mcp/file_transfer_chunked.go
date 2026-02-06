@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/acolita/claude-shell-mcp/internal/ports"
 	"github.com/acolita/claude-shell-mcp/internal/session"
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -265,7 +266,7 @@ func (s *Server) handleShellTransferStatus(ctx context.Context, req mcp.CallTool
 		return mcp.NewToolResultError("manifest_path is required"), nil
 	}
 
-	manifest, err := loadManifest(manifestPath)
+	manifest, err := s.loadManifest(manifestPath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("load manifest: %v", err)), nil
 	}
@@ -316,7 +317,7 @@ func (s *Server) handleShellTransferResume(ctx context.Context, req mcp.CallTool
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	manifest, err := loadManifest(manifestPath)
+	manifest, err := s.loadManifest(manifestPath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("load manifest: %v", err)), nil
 	}
@@ -334,7 +335,7 @@ func (s *Server) handleShellTransferResume(ctx context.Context, req mcp.CallTool
 }
 
 func (s *Server) performChunkedGet(sess *session.Session, remotePath, localPath, manifestPath string, chunkSize int) (*mcp.CallToolResult, error) {
-	startTime := time.Now()
+	startTime := s.clock.Now()
 
 	sftpClient, err := sess.SFTPClient()
 	if err != nil {
@@ -380,11 +381,11 @@ func (s *Server) performChunkedGet(sess *session.Session, remotePath, localPath,
 	}
 
 	// Create local file
-	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+	if err := s.fs.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("create directory: %v", err)), nil
 	}
 
-	localFile, err := os.Create(localPath)
+	localFile, err := s.fs.Create(localPath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("create local file: %v", err)), nil
 	}
@@ -406,7 +407,7 @@ func (s *Server) performChunkedGet(sess *session.Session, remotePath, localPath,
 	return s.transferChunksGet(localFile, remoteFile, manifest, manifestPath, startTime)
 }
 
-func (s *Server) transferChunksGet(localFile *os.File, remoteFile io.ReadSeeker, manifest *TransferManifest, manifestPath string, startTime time.Time) (*mcp.CallToolResult, error) {
+func (s *Server) transferChunksGet(localFile ports.FileHandle, remoteFile io.ReadSeeker, manifest *TransferManifest, manifestPath string, startTime time.Time) (*mcp.CallToolResult, error) {
 	buf := make([]byte, manifest.ChunkSize)
 
 	for i := range manifest.Chunks {
@@ -425,7 +426,7 @@ func (s *Server) transferChunksGet(localFile *os.File, remoteFile io.ReadSeeker,
 		n, err := io.ReadFull(remoteFile, buf[:chunk.Size])
 		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 			// Save progress before returning error
-			saveManifest(manifest, manifestPath)
+			s.saveManifest(manifest, manifestPath)
 			return mcp.NewToolResultError(fmt.Sprintf("read chunk %d: %v", i, err)), nil
 		}
 
@@ -435,28 +436,28 @@ func (s *Server) transferChunksGet(localFile *os.File, remoteFile io.ReadSeeker,
 
 		// Write to local file
 		if _, err := localFile.WriteAt(buf[:n], chunk.Offset); err != nil {
-			saveManifest(manifest, manifestPath)
+			s.saveManifest(manifest, manifestPath)
 			return mcp.NewToolResultError(fmt.Sprintf("write chunk %d: %v", i, err)), nil
 		}
 
 		chunk.Completed = true
 		manifest.BytesSent += int64(n)
-		manifest.LastUpdatedAt = time.Now()
+		manifest.LastUpdatedAt = s.clock.Now()
 
 		// Save progress periodically
 		if i%10 == 0 || i == manifest.TotalChunks-1 {
-			saveManifest(manifest, manifestPath)
+			s.saveManifest(manifest, manifestPath)
 		}
 	}
 
 	// Calculate final stats
-	duration := time.Since(startTime)
+	duration := s.clock.Now().Sub(startTime)
 	if duration.Seconds() > 0 {
 		manifest.BytesPerSecond = int64(float64(manifest.BytesSent) / duration.Seconds())
 	}
-	now := time.Now()
+	now := s.clock.Now()
 	manifest.CompletedAt = &now
-	saveManifest(manifest, manifestPath)
+	s.saveManifest(manifest, manifestPath)
 
 	result := ChunkedTransferResult{
 		Status:           "completed",
@@ -474,7 +475,7 @@ func (s *Server) transferChunksGet(localFile *os.File, remoteFile io.ReadSeeker,
 }
 
 func (s *Server) performChunkedPut(sess *session.Session, localPath, remotePath, manifestPath string, chunkSize int) (*mcp.CallToolResult, error) {
-	startTime := time.Now()
+	startTime := s.clock.Now()
 
 	sftpClient, err := sess.SFTPClient()
 	if err != nil {
@@ -482,7 +483,7 @@ func (s *Server) performChunkedPut(sess *session.Session, localPath, remotePath,
 	}
 
 	// Get local file info
-	info, err := os.Stat(localPath)
+	info, err := s.fs.Stat(localPath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("stat local file: %v", err)), nil
 	}
@@ -520,7 +521,7 @@ func (s *Server) performChunkedPut(sess *session.Session, localPath, remotePath,
 	}
 
 	// Open local file
-	localFile, err := os.Open(localPath)
+	localFile, err := s.fs.Open(localPath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf(errOpenLocalFile, err)), nil
 	}
@@ -544,14 +545,14 @@ func (s *Server) performChunkedPut(sess *session.Session, localPath, remotePath,
 }
 
 // uploadChunk handles reading from local, checksumming, and writing to remote for a single chunk.
-func uploadChunk(localFile *os.File, remoteFile io.WriteSeeker, chunk *ChunkInfo, chunkIndex int, buf []byte, manifest *TransferManifest, manifestPath string) error {
+func (s *Server) uploadChunk(localFile ports.FileHandle, remoteFile io.WriteSeeker, chunk *ChunkInfo, chunkIndex int, buf []byte, manifest *TransferManifest, manifestPath string) error {
 	if _, err := localFile.Seek(chunk.Offset, io.SeekStart); err != nil {
 		return fmt.Errorf("seek local: %v", err)
 	}
 
 	n, err := io.ReadFull(localFile, buf[:chunk.Size])
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		saveManifest(manifest, manifestPath)
+		s.saveManifest(manifest, manifestPath)
 		return fmt.Errorf("read chunk %d: %v", chunkIndex, err)
 	}
 
@@ -559,30 +560,30 @@ func uploadChunk(localFile *os.File, remoteFile io.WriteSeeker, chunk *ChunkInfo
 	chunk.Checksum = hex.EncodeToString(hash[:])
 
 	if _, err := remoteFile.Seek(chunk.Offset, io.SeekStart); err != nil {
-		saveManifest(manifest, manifestPath)
+		s.saveManifest(manifest, manifestPath)
 		return fmt.Errorf("seek remote: %v", err)
 	}
 
 	if _, err := remoteFile.Write(buf[:n]); err != nil {
-		saveManifest(manifest, manifestPath)
+		s.saveManifest(manifest, manifestPath)
 		return fmt.Errorf("write chunk %d: %v", chunkIndex, err)
 	}
 
 	chunk.Completed = true
 	manifest.BytesSent += int64(n)
-	manifest.LastUpdatedAt = time.Now()
+	manifest.LastUpdatedAt = s.clock.Now()
 	return nil
 }
 
 // finalizeChunkedTransfer calculates final stats and saves the manifest.
-func finalizeChunkedTransfer(manifest *TransferManifest, manifestPath string, startTime time.Time) *ChunkedTransferResult {
-	duration := time.Since(startTime)
+func (s *Server) finalizeChunkedTransfer(manifest *TransferManifest, manifestPath string, startTime time.Time) *ChunkedTransferResult {
+	duration := s.clock.Now().Sub(startTime)
 	if duration.Seconds() > 0 {
 		manifest.BytesPerSecond = int64(float64(manifest.BytesSent) / duration.Seconds())
 	}
-	now := time.Now()
+	now := s.clock.Now()
 	manifest.CompletedAt = &now
-	saveManifest(manifest, manifestPath)
+	s.saveManifest(manifest, manifestPath)
 
 	return &ChunkedTransferResult{
 		Status:           "completed",
@@ -597,7 +598,7 @@ func finalizeChunkedTransfer(manifest *TransferManifest, manifestPath string, st
 	}
 }
 
-func (s *Server) transferChunksPut(localFile *os.File, remoteFile io.WriteSeeker, manifest *TransferManifest, manifestPath string, startTime time.Time) (*mcp.CallToolResult, error) {
+func (s *Server) transferChunksPut(localFile ports.FileHandle, remoteFile io.WriteSeeker, manifest *TransferManifest, manifestPath string, startTime time.Time) (*mcp.CallToolResult, error) {
 	buf := make([]byte, manifest.ChunkSize)
 
 	for i := range manifest.Chunks {
@@ -605,20 +606,20 @@ func (s *Server) transferChunksPut(localFile *os.File, remoteFile io.WriteSeeker
 			continue
 		}
 
-		if err := uploadChunk(localFile, remoteFile, &manifest.Chunks[i], i, buf, manifest, manifestPath); err != nil {
+		if err := s.uploadChunk(localFile, remoteFile, &manifest.Chunks[i], i, buf, manifest, manifestPath); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
 		if i%10 == 0 || i == manifest.TotalChunks-1 {
-			saveManifest(manifest, manifestPath)
+			s.saveManifest(manifest, manifestPath)
 		}
 	}
 
-	return jsonResult(finalizeChunkedTransfer(manifest, manifestPath, startTime))
+	return jsonResult(s.finalizeChunkedTransfer(manifest, manifestPath, startTime))
 }
 
 func (s *Server) resumeChunkedGet(sess *session.Session, manifest *TransferManifest, manifestPath string) (*mcp.CallToolResult, error) {
-	startTime := time.Now()
+	startTime := s.clock.Now()
 
 	sftpClient, err := sess.SFTPClient()
 	if err != nil {
@@ -626,7 +627,7 @@ func (s *Server) resumeChunkedGet(sess *session.Session, manifest *TransferManif
 	}
 
 	// Open local file for writing
-	localFile, err := os.OpenFile(manifest.LocalPath, os.O_RDWR, 0644)
+	localFile, err := s.fs.OpenFile(manifest.LocalPath, os.O_RDWR, 0644)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf(errOpenLocalFile, err)), nil
 	}
@@ -666,7 +667,7 @@ func (s *Server) resumeChunkedGet(sess *session.Session, manifest *TransferManif
 }
 
 func (s *Server) resumeChunkedPut(sess *session.Session, manifest *TransferManifest, manifestPath string) (*mcp.CallToolResult, error) {
-	startTime := time.Now()
+	startTime := s.clock.Now()
 
 	sftpClient, err := sess.SFTPClient()
 	if err != nil {
@@ -674,7 +675,7 @@ func (s *Server) resumeChunkedPut(sess *session.Session, manifest *TransferManif
 	}
 
 	// Open local file for reading
-	localFile, err := os.Open(manifest.LocalPath)
+	localFile, err := s.fs.Open(manifest.LocalPath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf(errOpenLocalFile, err)), nil
 	}
@@ -714,8 +715,8 @@ func (s *Server) resumeChunkedPut(sess *session.Session, manifest *TransferManif
 }
 
 // loadManifest reads a transfer manifest from disk.
-func loadManifest(path string) (*TransferManifest, error) {
-	data, err := os.ReadFile(path)
+func (s *Server) loadManifest(path string) (*TransferManifest, error) {
+	data, err := s.fs.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read manifest: %w", err)
 	}
@@ -729,13 +730,13 @@ func loadManifest(path string) (*TransferManifest, error) {
 }
 
 // saveManifest writes a transfer manifest to disk.
-func saveManifest(manifest *TransferManifest, path string) error {
+func (s *Server) saveManifest(manifest *TransferManifest, path string) error {
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal manifest: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := s.fs.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("write manifest: %w", err)
 	}
 

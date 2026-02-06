@@ -1,7 +1,9 @@
 package fakefs
 
 import (
+	"io"
 	"io/fs"
+	"os"
 	"testing"
 	"time"
 )
@@ -351,5 +353,484 @@ func TestFS_AddFileCreatesParentDirs(t *testing.T) {
 		if !info.IsDir() {
 			t.Errorf("%q should be a directory", dir)
 		}
+	}
+}
+
+// ==================== Open / Create / OpenFile tests ====================
+
+func TestFS_Open_ReadFile(t *testing.T) {
+	f := New()
+	f.AddFile("/data/test.txt", []byte("hello world"), 0644)
+
+	fh, err := f.Open("/data/test.txt")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer fh.Close()
+
+	buf := make([]byte, 20)
+	n, err := fh.Read(buf)
+	if err != nil && err != io.EOF {
+		t.Fatalf("Read: %v", err)
+	}
+	if string(buf[:n]) != "hello world" {
+		t.Errorf("Read=%q, want 'hello world'", buf[:n])
+	}
+}
+
+func TestFS_Open_NotExist(t *testing.T) {
+	f := New()
+
+	_, err := f.Open("/nonexistent.txt")
+	if err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+}
+
+func TestFS_Create_NewFile(t *testing.T) {
+	f := New()
+
+	fh, err := f.Create("/newfile.txt")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	n, err := fh.Write([]byte("created"))
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if n != 7 {
+		t.Errorf("Write returned %d, want 7", n)
+	}
+
+	fh.Close()
+
+	// Verify data was written back
+	data, err := f.ReadFile("/newfile.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "created" {
+		t.Errorf("content=%q, want 'created'", string(data))
+	}
+}
+
+func TestFS_Create_TruncatesExisting(t *testing.T) {
+	f := New()
+	f.AddFile("/existing.txt", []byte("old content"), 0644)
+
+	fh, err := f.Create("/existing.txt")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	fh.Write([]byte("new"))
+	fh.Close()
+
+	data, _ := f.ReadFile("/existing.txt")
+	if string(data) != "new" {
+		t.Errorf("content=%q, want 'new' (should be truncated)", string(data))
+	}
+}
+
+func TestFS_OpenFile_CreateFlag(t *testing.T) {
+	f := New()
+
+	fh, err := f.OpenFile("/created.txt", os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	fh.Write([]byte("via openfile"))
+	fh.Close()
+
+	data, _ := f.ReadFile("/created.txt")
+	if string(data) != "via openfile" {
+		t.Errorf("content=%q, want 'via openfile'", string(data))
+	}
+}
+
+func TestFS_OpenFile_NoCreate_NotExist(t *testing.T) {
+	f := New()
+
+	_, err := f.OpenFile("/nonexistent.txt", os.O_RDONLY, 0644)
+	if err == nil {
+		t.Fatal("expected error opening nonexistent file without O_CREATE")
+	}
+}
+
+// ==================== Symlink / Readlink tests ====================
+
+func TestFS_Symlink_And_Readlink(t *testing.T) {
+	f := New()
+
+	err := f.Symlink("/real/target", "/my/link")
+	if err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	target, err := f.Readlink("/my/link")
+	if err != nil {
+		t.Fatalf("Readlink: %v", err)
+	}
+	if target != "/real/target" {
+		t.Errorf("Readlink=%q, want '/real/target'", target)
+	}
+}
+
+func TestFS_Readlink_NotSymlink(t *testing.T) {
+	f := New()
+
+	_, err := f.Readlink("/nonexistent")
+	if err == nil {
+		t.Fatal("expected error for non-symlink path")
+	}
+}
+
+func TestFS_AddSymlink_And_Readlink(t *testing.T) {
+	f := New()
+	f.AddSymlink("/link", "/target")
+
+	target, err := f.Readlink("/link")
+	if err != nil {
+		t.Fatalf("Readlink: %v", err)
+	}
+	if target != "/target" {
+		t.Errorf("Readlink=%q, want '/target'", target)
+	}
+}
+
+// ==================== Lstat tests ====================
+
+func TestFS_Lstat_Symlink(t *testing.T) {
+	f := New()
+	f.Symlink("/real/target", "/my/link")
+
+	info, err := f.Lstat("/my/link")
+	if err != nil {
+		t.Fatalf("Lstat: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Error("Lstat should report ModeSymlink for symlinks")
+	}
+	if info.Name() != "link" {
+		t.Errorf("Name()=%q, want 'link'", info.Name())
+	}
+}
+
+func TestFS_Lstat_Directory(t *testing.T) {
+	f := New()
+	f.MkdirAll("/mydir", 0755)
+
+	info, err := f.Lstat("/mydir")
+	if err != nil {
+		t.Fatalf("Lstat: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("Lstat should report directory")
+	}
+}
+
+func TestFS_Lstat_File(t *testing.T) {
+	f := New()
+	f.AddFile("/data.txt", []byte("data"), 0644)
+
+	info, err := f.Lstat("/data.txt")
+	if err != nil {
+		t.Fatalf("Lstat: %v", err)
+	}
+	if info.IsDir() {
+		t.Error("Lstat should not report directory for regular file")
+	}
+	if info.Size() != 4 {
+		t.Errorf("Size()=%d, want 4", info.Size())
+	}
+}
+
+func TestFS_Lstat_NotExist(t *testing.T) {
+	f := New()
+
+	_, err := f.Lstat("/nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent path")
+	}
+}
+
+// ==================== Executable tests ====================
+
+func TestFS_Executable(t *testing.T) {
+	f := New()
+	f.SetExecutable("/usr/bin/myapp")
+
+	path, err := f.Executable()
+	if err != nil {
+		t.Fatalf("Executable: %v", err)
+	}
+	if path != "/usr/bin/myapp" {
+		t.Errorf("Executable()=%q, want '/usr/bin/myapp'", path)
+	}
+}
+
+func TestFS_Executable_Default(t *testing.T) {
+	f := New()
+
+	path, err := f.Executable()
+	if err != nil {
+		t.Fatalf("Executable: %v", err)
+	}
+	if path != "/usr/local/bin/claude-shell-mcp" {
+		t.Errorf("Executable()=%q, want '/usr/local/bin/claude-shell-mcp' (default)", path)
+	}
+}
+
+// ==================== FileHandle method tests ====================
+
+func TestFileHandle_Name(t *testing.T) {
+	f := New()
+	f.AddFile("/test.txt", []byte("data"), 0644)
+
+	fh, _ := f.Open("/test.txt")
+	defer fh.Close()
+
+	if fh.Name() != "/test.txt" {
+		t.Errorf("Name()=%q, want '/test.txt'", fh.Name())
+	}
+}
+
+func TestFileHandle_ReadAt(t *testing.T) {
+	f := New()
+	f.AddFile("/test.txt", []byte("hello world"), 0644)
+
+	fh, _ := f.Open("/test.txt")
+	defer fh.Close()
+
+	buf := make([]byte, 5)
+	n, err := fh.ReadAt(buf, 6)
+	if err != nil && err != io.EOF {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	if string(buf[:n]) != "world" {
+		t.Errorf("ReadAt=%q, want 'world'", buf[:n])
+	}
+}
+
+func TestFileHandle_WriteAt(t *testing.T) {
+	f := New()
+
+	fh, _ := f.Create("/test.txt")
+	fh.Write([]byte("hello world"))
+
+	n, err := fh.WriteAt([]byte("EARTH"), 6)
+	if err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	if n != 5 {
+		t.Errorf("WriteAt returned %d, want 5", n)
+	}
+
+	fh.Close()
+
+	data, _ := f.ReadFile("/test.txt")
+	if string(data) != "hello EARTH" {
+		t.Errorf("content=%q, want 'hello EARTH'", string(data))
+	}
+}
+
+func TestFileHandle_WriteAt_Extends(t *testing.T) {
+	f := New()
+
+	fh, _ := f.Create("/test.txt")
+	fh.Write([]byte("hi"))
+
+	// Write past end
+	fh.WriteAt([]byte("!"), 10)
+	fh.Close()
+
+	data, _ := f.ReadFile("/test.txt")
+	if len(data) != 11 {
+		t.Errorf("len=%d, want 11 (should extend with zeros)", len(data))
+	}
+	if data[10] != '!' {
+		t.Errorf("data[10]=%d, want '!'", data[10])
+	}
+}
+
+func TestFileHandle_Seek(t *testing.T) {
+	f := New()
+	f.AddFile("/test.txt", []byte("abcdef"), 0644)
+
+	fh, _ := f.Open("/test.txt")
+	defer fh.Close()
+
+	// Seek to offset 3
+	pos, err := fh.Seek(3, io.SeekStart)
+	if err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+	if pos != 3 {
+		t.Errorf("pos=%d, want 3", pos)
+	}
+
+	buf := make([]byte, 3)
+	n, _ := fh.Read(buf)
+	if string(buf[:n]) != "def" {
+		t.Errorf("Read after Seek=%q, want 'def'", buf[:n])
+	}
+}
+
+func TestFileHandle_Seek_FromEnd(t *testing.T) {
+	f := New()
+	f.AddFile("/test.txt", []byte("abcdef"), 0644)
+
+	fh, _ := f.Open("/test.txt")
+	defer fh.Close()
+
+	pos, err := fh.Seek(-2, io.SeekEnd)
+	if err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+	if pos != 4 {
+		t.Errorf("pos=%d, want 4", pos)
+	}
+
+	buf := make([]byte, 2)
+	n, _ := fh.Read(buf)
+	if string(buf[:n]) != "ef" {
+		t.Errorf("Read after SeekEnd=%q, want 'ef'", buf[:n])
+	}
+}
+
+func TestFileHandle_Truncate_Shrink(t *testing.T) {
+	f := New()
+
+	fh, _ := f.Create("/test.txt")
+	fh.Write([]byte("hello world"))
+	fh.Truncate(5)
+	fh.Close()
+
+	data, _ := f.ReadFile("/test.txt")
+	if string(data) != "hello" {
+		t.Errorf("content=%q, want 'hello'", string(data))
+	}
+}
+
+func TestFileHandle_Truncate_Grow(t *testing.T) {
+	f := New()
+
+	fh, _ := f.Create("/test.txt")
+	fh.Write([]byte("hi"))
+	fh.Truncate(10)
+	fh.Close()
+
+	data, _ := f.ReadFile("/test.txt")
+	if len(data) != 10 {
+		t.Errorf("len=%d, want 10", len(data))
+	}
+	if string(data[:2]) != "hi" {
+		t.Errorf("prefix=%q, want 'hi'", data[:2])
+	}
+}
+
+func TestFileHandle_Close_Idempotent(t *testing.T) {
+	f := New()
+	f.AddFile("/test.txt", []byte("data"), 0644)
+
+	fh, _ := f.Open("/test.txt")
+	err1 := fh.Close()
+	if err1 != nil {
+		t.Fatalf("first Close: %v", err1)
+	}
+
+	err2 := fh.Close()
+	if err2 != nil {
+		t.Errorf("second Close should not error, got: %v", err2)
+	}
+}
+
+func TestFileHandle_ReadAfterClose(t *testing.T) {
+	f := New()
+	f.AddFile("/test.txt", []byte("data"), 0644)
+
+	fh, _ := f.Open("/test.txt")
+	fh.Close()
+
+	_, err := fh.Read(make([]byte, 4))
+	if err == nil {
+		t.Fatal("Read after Close should return error")
+	}
+}
+
+func TestFileHandle_WriteAfterClose(t *testing.T) {
+	f := New()
+
+	fh, _ := f.Create("/test.txt")
+	fh.Close()
+
+	_, err := fh.Write([]byte("data"))
+	if err == nil {
+		t.Fatal("Write after Close should return error")
+	}
+}
+
+func TestFileHandle_SeekAfterClose(t *testing.T) {
+	f := New()
+	f.AddFile("/test.txt", []byte("data"), 0644)
+
+	fh, _ := f.Open("/test.txt")
+	fh.Close()
+
+	_, err := fh.Seek(0, io.SeekStart)
+	if err == nil {
+		t.Fatal("Seek after Close should return error")
+	}
+}
+
+func TestFileHandle_ReadAtAfterClose(t *testing.T) {
+	f := New()
+	f.AddFile("/test.txt", []byte("data"), 0644)
+
+	fh, _ := f.Open("/test.txt")
+	fh.Close()
+
+	_, err := fh.ReadAt(make([]byte, 4), 0)
+	if err == nil {
+		t.Fatal("ReadAt after Close should return error")
+	}
+}
+
+func TestFileHandle_WriteAtAfterClose(t *testing.T) {
+	f := New()
+
+	fh, _ := f.Create("/test.txt")
+	fh.Close()
+
+	_, err := fh.WriteAt([]byte("data"), 0)
+	if err == nil {
+		t.Fatal("WriteAt after Close should return error")
+	}
+}
+
+func TestFileHandle_TruncateAfterClose(t *testing.T) {
+	f := New()
+
+	fh, _ := f.Create("/test.txt")
+	fh.Close()
+
+	err := fh.Truncate(0)
+	if err == nil {
+		t.Fatal("Truncate after Close should return error")
+	}
+}
+
+func TestFileHandle_Write_ExtendsBeyondData(t *testing.T) {
+	f := New()
+
+	fh, _ := f.Create("/test.txt")
+	fh.Write([]byte("abc"))
+	fh.Seek(0, io.SeekEnd) // at position 3
+	fh.Write([]byte("defgh"))
+	fh.Close()
+
+	data, _ := f.ReadFile("/test.txt")
+	if string(data) != "abcdefgh" {
+		t.Errorf("content=%q, want 'abcdefgh'", string(data))
 	}
 }

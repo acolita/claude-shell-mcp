@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/acolita/claude-shell-mcp/internal/ports"
 	"gopkg.in/yaml.v3"
 )
 
@@ -102,14 +103,21 @@ func DefaultConfig() *Config {
 }
 
 // Load loads configuration from a YAML file.
-func Load(path string) (*Config, error) {
+// An optional FileSystem can be passed for testing; if omitted, the real OS is used.
+func Load(path string, fsys ...ports.FileSystem) (*Config, error) {
 	cfg := DefaultConfig()
 
 	if path == "" {
 		return cfg, nil
 	}
 
-	data, err := os.ReadFile(path)
+	var data []byte
+	var err error
+	if len(fsys) > 0 && fsys[0] != nil {
+		data, err = fsys[0].ReadFile(path)
+	} else {
+		data, err = os.ReadFile(path)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read config file: %w", err)
 	}

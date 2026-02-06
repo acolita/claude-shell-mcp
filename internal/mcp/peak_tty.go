@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -297,7 +296,7 @@ func (s *Server) handlePeakTTYDeploy(ctx context.Context, req mcp.CallToolReques
 	}
 
 	// Also check relative to the executable
-	if execPath, err := os.Executable(); err == nil {
+	if execPath, err := s.fs.Executable(); err == nil {
 		execDir := filepath.Dir(execPath)
 		searchPaths = append(searchPaths,
 			filepath.Join(execDir, peakTTYBinaryName),
@@ -308,7 +307,7 @@ func (s *Server) handlePeakTTYDeploy(ctx context.Context, req mcp.CallToolReques
 	var binaryData []byte
 	var foundPath string
 	for _, p := range searchPaths {
-		data, err := os.ReadFile(p)
+		data, err := s.fs.ReadFile(p)
 		if err == nil {
 			binaryData = data
 			foundPath = p

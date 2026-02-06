@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realclock"
 	"github.com/acolita/claude-shell-mcp/internal/config"
 	"github.com/acolita/claude-shell-mcp/internal/testing/fakes/fakefs"
 )
@@ -376,6 +377,9 @@ func TestDirTransferResultAddError(t *testing.T) {
 }
 
 func TestFinalizeTransferResult(t *testing.T) {
+	clk := realclock.New()
+	srv := &Server{clock: clk}
+
 	result := DirTransferResult{
 		Status:           "completed",
 		FilesTransferred: 5,
@@ -383,7 +387,7 @@ func TestFinalizeTransferResult(t *testing.T) {
 	}
 
 	startTime := time.Now().Add(-2 * time.Second)
-	finalizeTransferResult(&result, startTime)
+	srv.finalizeTransferResult(&result, startTime)
 
 	if result.DurationMs < 2000 {
 		t.Errorf("expected duration >= 2000ms, got %d", result.DurationMs)
@@ -398,7 +402,7 @@ func TestFinalizeTransferResult(t *testing.T) {
 		Status: "completed",
 		Errors: []TransferError{{Path: "/test", Error: "err"}},
 	}
-	finalizeTransferResult(&result2, time.Now())
+	srv.finalizeTransferResult(&result2, time.Now())
 
 	if result2.Status != "completed_with_errors" {
 		t.Errorf("expected status 'completed_with_errors', got %q", result2.Status)

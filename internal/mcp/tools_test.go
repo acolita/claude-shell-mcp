@@ -7,6 +7,7 @@ import (
 
 	"github.com/acolita/claude-shell-mcp/internal/config"
 	"github.com/acolita/claude-shell-mcp/internal/session"
+	"github.com/acolita/claude-shell-mcp/internal/testing/fakes/fakeclock"
 	"github.com/acolita/claude-shell-mcp/internal/testing/fakes/fakefs"
 )
 
@@ -149,13 +150,9 @@ func TestTruncateOutput(t *testing.T) {
 }
 
 func TestApplyAutoTruncation(t *testing.T) {
-	// Save original timeNow and restore after test
-	originalTimeNow := timeNow
-	defer func() { timeNow = originalTimeNow }()
-
 	// Fixed time for deterministic file names
 	fixedTime := time.Unix(1704067200, 0) // 2024-01-01 00:00:00 UTC
-	timeNow = func() time.Time { return fixedTime }
+	fc := fakeclock.New(fixedTime)
 
 	tests := []struct {
 		name          string
@@ -185,7 +182,7 @@ func TestApplyAutoTruncation(t *testing.T) {
 			fs := fakefs.New()
 			fs.SetCwd("/test/project")
 
-			s := &Server{fs: fs}
+			s := &Server{fs: fs, clock: fc}
 
 			result := &session.ExecResult{
 				Stdout: tt.stdout,

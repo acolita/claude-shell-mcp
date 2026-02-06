@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realclock"
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realfs"
 )
 
 func TestChunkCalculation(t *testing.T) {
@@ -34,7 +37,14 @@ func TestChunkCalculation(t *testing.T) {
 	}
 }
 
+// testServer returns a minimal Server with real filesystem and clock for manifest tests.
+func testServer() *Server {
+	return &Server{fs: realfs.New(), clock: realclock.New()}
+}
+
 func TestTransferManifest(t *testing.T) {
+	srv := testServer()
+
 	tmpDir, err := os.MkdirTemp("", "manifest_test")
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +75,7 @@ func TestTransferManifest(t *testing.T) {
 	}
 
 	// Save manifest
-	if err := saveManifest(manifest, manifestPath); err != nil {
+	if err := srv.saveManifest(manifest, manifestPath); err != nil {
 		t.Fatalf("saveManifest: %v", err)
 	}
 
@@ -75,7 +85,7 @@ func TestTransferManifest(t *testing.T) {
 	}
 
 	// Load manifest
-	loaded, err := loadManifest(manifestPath)
+	loaded, err := srv.loadManifest(manifestPath)
 	if err != nil {
 		t.Fatalf("loadManifest: %v", err)
 	}
@@ -246,8 +256,10 @@ func TestProgressCalculation(t *testing.T) {
 }
 
 func TestLoadManifestError(t *testing.T) {
+	srv := testServer()
+
 	// Non-existent file
-	_, err := loadManifest("/nonexistent/path/manifest.transfer")
+	_, err := srv.loadManifest("/nonexistent/path/manifest.transfer")
 	if err == nil {
 		t.Error("Expected error for non-existent file")
 	}
@@ -264,7 +276,7 @@ func TestLoadManifestError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = loadManifest(invalidPath)
+	_, err = srv.loadManifest(invalidPath)
 	if err == nil {
 		t.Error("Expected error for invalid JSON")
 	}

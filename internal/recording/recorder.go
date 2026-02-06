@@ -8,15 +8,18 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/acolita/claude-shell-mcp/internal/ports"
 )
 
 // Recorder records terminal I/O in asciicast v2 format.
 // See: https://docs.asciinema.org/manual/asciicast/v2/
 type Recorder struct {
 	mu        sync.Mutex
-	file      *os.File
+	file      ports.FileHandle
 	startTime time.Time
 	closed    bool
+	clock     ports.Clock
 }
 
 // Header is the asciicast v2 header.
@@ -42,22 +45,23 @@ func (e Event) MarshalJSON() ([]byte, error) {
 }
 
 // NewRecorder creates a new recorder writing to the specified path.
-func NewRecorder(basePath, sessionID string, width, height int) (*Recorder, error) {
-	if err := os.MkdirAll(basePath, 0700); err != nil {
+func NewRecorder(basePath, sessionID string, width, height int, fs ports.FileSystem, clock ports.Clock) (*Recorder, error) {
+	if err := fs.MkdirAll(basePath, 0700); err != nil {
 		return nil, fmt.Errorf("create recording directory: %w", err)
 	}
 
-	filename := fmt.Sprintf("%s_%s.cast", sessionID, time.Now().Format("20060102_150405"))
+	filename := fmt.Sprintf("%s_%s.cast", sessionID, clock.Now().Format("20060102_150405"))
 	fullPath := filepath.Join(basePath, filename)
 
-	file, err := os.OpenFile(fullPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
+	file, err := fs.OpenFile(fullPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("create recording file: %w", err)
 	}
 
 	r := &Recorder{
 		file:      file,
-		startTime: time.Now(),
+		startTime: clock.Now(),
+		clock:     clock,
 	}
 
 	// Write header
@@ -115,7 +119,7 @@ func (r *Recorder) record(eventType, data string) error {
 		return nil
 	}
 
-	elapsed := time.Since(r.startTime).Seconds()
+	elapsed := r.clock.Now().Sub(r.startTime).Seconds()
 	event := Event{
 		Time: elapsed,
 		Type: eventType,

@@ -9,7 +9,14 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realclock"
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realfs"
+	"github.com/acolita/claude-shell-mcp/internal/ports"
 )
+
+func testFS() ports.FileSystem    { return realfs.New() }
+func testClock() ports.Clock      { return realclock.New() }
 
 // ---------- Event tests ----------
 
@@ -145,7 +152,7 @@ func TestNewRecorder(t *testing.T) {
 	tmpDir := t.TempDir()
 	basePath := filepath.Join(tmpDir, "recordings")
 
-	r, err := NewRecorder(basePath, "sess_test123", 80, 24)
+	r, err := NewRecorder(basePath, "sess_test123", 80, 24, testFS(), testClock())
 	if err != nil {
 		t.Fatalf("NewRecorder() error = %v", err)
 	}
@@ -185,7 +192,7 @@ func TestNewRecorder(t *testing.T) {
 func TestNewRecorder_WritesValidHeader(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	r, err := NewRecorder(tmpDir, "sess_hdr", 132, 43)
+	r, err := NewRecorder(tmpDir, "sess_hdr", 132, 43, testFS(), testClock())
 	if err != nil {
 		t.Fatalf("NewRecorder() error = %v", err)
 	}
@@ -231,7 +238,7 @@ func TestNewRecorder_CreatesNestedDirectories(t *testing.T) {
 	tmpDir := t.TempDir()
 	basePath := filepath.Join(tmpDir, "a", "b", "c", "recordings")
 
-	r, err := NewRecorder(basePath, "sess_nested", 80, 24)
+	r, err := NewRecorder(basePath, "sess_nested", 80, 24, testFS(), testClock())
 	if err != nil {
 		t.Fatalf("NewRecorder() error = %v", err)
 	}
@@ -244,7 +251,7 @@ func TestNewRecorder_CreatesNestedDirectories(t *testing.T) {
 
 func TestNewRecorder_InvalidPath(t *testing.T) {
 	// Use /dev/null as a parent, which is not a directory
-	_, err := NewRecorder("/dev/null/recordings", "sess_bad", 80, 24)
+	_, err := NewRecorder("/dev/null/recordings", "sess_bad", 80, 24, testFS(), testClock())
 	if err == nil {
 		t.Fatal("expected error for invalid path, got nil")
 	}
@@ -255,7 +262,7 @@ func TestNewRecorder_InvalidPath(t *testing.T) {
 func TestRecorderRecordOutput(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	r, err := NewRecorder(tmpDir, "sess_out", 80, 24)
+	r, err := NewRecorder(tmpDir, "sess_out", 80, 24, testFS(), testClock())
 	if err != nil {
 		t.Fatalf("NewRecorder() error = %v", err)
 	}
@@ -289,7 +296,7 @@ func TestRecorderRecordOutput(t *testing.T) {
 func TestRecorderRecordInput(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	r, err := NewRecorder(tmpDir, "sess_in", 80, 24)
+	r, err := NewRecorder(tmpDir, "sess_in", 80, 24, testFS(), testClock())
 	if err != nil {
 		t.Fatalf("NewRecorder() error = %v", err)
 	}
@@ -314,7 +321,7 @@ func TestRecorderRecordInput(t *testing.T) {
 func TestRecorderRecordMaskedInput(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	r, err := NewRecorder(tmpDir, "sess_mask", 80, 24)
+	r, err := NewRecorder(tmpDir, "sess_mask", 80, 24, testFS(), testClock())
 	if err != nil {
 		t.Fatalf("NewRecorder() error = %v", err)
 	}
@@ -339,7 +346,7 @@ func TestRecorderRecordMaskedInput(t *testing.T) {
 func TestRecorderRecordMaskedInput_ZeroLength(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	r, err := NewRecorder(tmpDir, "sess_mask0", 80, 24)
+	r, err := NewRecorder(tmpDir, "sess_mask0", 80, 24, testFS(), testClock())
 	if err != nil {
 		t.Fatalf("NewRecorder() error = %v", err)
 	}
@@ -361,7 +368,7 @@ func TestRecorderRecordMaskedInput_ZeroLength(t *testing.T) {
 func TestRecorderEventTimestamps(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	r, err := NewRecorder(tmpDir, "sess_time", 80, 24)
+	r, err := NewRecorder(tmpDir, "sess_time", 80, 24, testFS(), testClock())
 	if err != nil {
 		t.Fatalf("NewRecorder() error = %v", err)
 	}
@@ -395,7 +402,7 @@ func TestRecorderEventTimestamps(t *testing.T) {
 func TestRecorderClose_Idempotent(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	r, err := NewRecorder(tmpDir, "sess_close", 80, 24)
+	r, err := NewRecorder(tmpDir, "sess_close", 80, 24, testFS(), testClock())
 	if err != nil {
 		t.Fatalf("NewRecorder() error = %v", err)
 	}
@@ -413,7 +420,7 @@ func TestRecorderClose_Idempotent(t *testing.T) {
 func TestRecorderRecordAfterClose(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	r, err := NewRecorder(tmpDir, "sess_rac", 80, 24)
+	r, err := NewRecorder(tmpDir, "sess_rac", 80, 24, testFS(), testClock())
 	if err != nil {
 		t.Fatalf("NewRecorder() error = %v", err)
 	}
@@ -437,7 +444,7 @@ func TestRecorderRecordAfterClose(t *testing.T) {
 func TestRecorderPath(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	r, err := NewRecorder(tmpDir, "sess_path", 80, 24)
+	r, err := NewRecorder(tmpDir, "sess_path", 80, 24, testFS(), testClock())
 	if err != nil {
 		t.Fatalf("NewRecorder() error = %v", err)
 	}
@@ -465,7 +472,7 @@ func TestRecorderPath_NilFile(t *testing.T) {
 func TestRecorderConcurrentRecording(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	r, err := NewRecorder(tmpDir, "sess_conc", 80, 24)
+	r, err := NewRecorder(tmpDir, "sess_conc", 80, 24, testFS(), testClock())
 	if err != nil {
 		t.Fatalf("NewRecorder() error = %v", err)
 	}
@@ -503,7 +510,7 @@ func TestRecorderConcurrentRecording(t *testing.T) {
 func TestRecorderAsciicastV2Format(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	r, err := NewRecorder(tmpDir, "sess_v2", 100, 50)
+	r, err := NewRecorder(tmpDir, "sess_v2", 100, 50, testFS(), testClock())
 	if err != nil {
 		t.Fatalf("NewRecorder() error = %v", err)
 	}

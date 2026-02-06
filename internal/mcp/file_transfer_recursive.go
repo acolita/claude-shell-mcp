@@ -156,7 +156,7 @@ const (
 
 // handleDownloadSymlink processes a symlink during download operations.
 // Returns the action to take and potentially updated entry info.
-func handleDownloadSymlink(
+func (s *Server) handleDownloadSymlink(
 	client *sftp.Client,
 	remoteEntryPath, localEntryPath string,
 	symlinkMode string,
@@ -171,11 +171,11 @@ func handleDownloadSymlink(
 			result.addError(remoteEntryPath, fmt.Sprintf("read symlink: %v", err))
 			return symlinkError, nil
 		}
-		if err := os.MkdirAll(filepath.Dir(localEntryPath), 0755); err != nil {
+		if err := s.fs.MkdirAll(filepath.Dir(localEntryPath), 0755); err != nil {
 			result.addError(localEntryPath, fmt.Sprintf("create parent dir: %v", err))
 			return symlinkError, nil
 		}
-		if err := os.Symlink(target, localEntryPath); err != nil {
+		if err := s.fs.Symlink(target, localEntryPath); err != nil {
 			result.addError(localEntryPath, fmt.Sprintf("create symlink: %v", err))
 			return symlinkError, nil
 		}
@@ -193,7 +193,7 @@ func handleDownloadSymlink(
 
 // handleUploadSymlink processes a symlink during upload operations.
 // Returns the action to take and potentially updated file info.
-func handleUploadSymlink(
+func (s *Server) handleUploadSymlink(
 	sftpClient *sftp.Client,
 	localPath, remoteEntryPath string,
 	symlinkMode string,
@@ -203,7 +203,7 @@ func handleUploadSymlink(
 	case "skip":
 		return symlinkSkip, nil
 	case "preserve":
-		target, err := os.Readlink(localPath)
+		target, err := s.fs.Readlink(localPath)
 		if err != nil {
 			result.addError(localPath, fmt.Sprintf("read symlink: %v", err))
 			return symlinkError, nil
@@ -215,7 +215,7 @@ func handleUploadSymlink(
 		result.SymlinksHandled++
 		return symlinkHandled, nil
 	default: // "follow"
-		info, err := os.Stat(localPath)
+		info, err := s.fs.Stat(localPath)
 		if err != nil {
 			result.addError(localPath, fmt.Sprintf("stat symlink target: %v", err))
 			return symlinkError, nil
@@ -225,7 +225,7 @@ func handleUploadSymlink(
 }
 
 // downloadSingleFile downloads a single file from remote to local.
-func downloadSingleFile(
+func (s *Server) downloadSingleFile(
 	client *sftp.Client,
 	remoteEntryPath, localEntryPath string,
 	entry os.FileInfo,
@@ -238,18 +238,18 @@ func downloadSingleFile(
 		return
 	}
 
-	if err := os.MkdirAll(filepath.Dir(localEntryPath), 0755); err != nil {
+	if err := s.fs.MkdirAll(filepath.Dir(localEntryPath), 0755); err != nil {
 		result.addError(localEntryPath, err.Error())
 		return
 	}
 
-	if err := os.WriteFile(localEntryPath, data, entry.Mode().Perm()); err != nil {
+	if err := s.fs.WriteFile(localEntryPath, data, entry.Mode().Perm()); err != nil {
 		result.addError(localEntryPath, err.Error())
 		return
 	}
 
 	if preserve {
-		os.Chtimes(localEntryPath, entry.ModTime(), entry.ModTime())
+		s.fs.Chtimes(localEntryPath, entry.ModTime(), entry.ModTime())
 	}
 
 	result.FilesTransferred++
@@ -257,14 +257,14 @@ func downloadSingleFile(
 }
 
 // uploadSingleFile uploads a single file from local to remote.
-func uploadSingleFile(
+func (s *Server) uploadSingleFile(
 	sftpClient *sftp.Client,
 	localPath, remoteEntryPath string,
 	info os.FileInfo,
 	opts DirPutOptions,
 	result *DirTransferResult,
 ) {
-	data, err := os.ReadFile(localPath)
+	data, err := s.fs.ReadFile(localPath)
 	if err != nil {
 		result.addError(localPath, err.Error())
 		return
@@ -361,7 +361,7 @@ func (s *Server) handleShellDirGet(ctx context.Context, req mcp.CallToolRequest)
 }
 
 func (s *Server) handleSSHDirGet(sess *session.Session, remotePath string, opts DirGetOptions) (*mcp.CallToolResult, error) {
-	startTime := time.Now()
+	startTime := s.clock.Now()
 
 	sftpClient, err := sess.SFTPClient()
 	if err != nil {
@@ -378,7 +378,7 @@ func (s *Server) handleSSHDirGet(sess *session.Session, remotePath string, opts 
 	}
 
 	// Create local base directory
-	if err := os.MkdirAll(opts.LocalPath, 0755); err != nil {
+	if err := s.fs.MkdirAll(opts.LocalPath, 0755); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("create local directory: %v", err)), nil
 	}
 
@@ -395,7 +395,7 @@ func (s *Server) handleSSHDirGet(sess *session.Session, remotePath string, opts 
 		return mcp.NewToolResultError(fmt.Sprintf(errWalkDir, err)), nil
 	}
 
-	finalizeTransferResult(&result, startTime)
+	s.finalizeTransferResult(&result, startTime)
 	return jsonResult(result)
 }
 
@@ -415,7 +415,7 @@ func (s *Server) processRemoteEntry(ctx *remoteWalkContext, entry os.FileInfo, e
 
 	// Process symlinks
 	if entry.Mode()&os.ModeSymlink != 0 {
-		action, resolved := handleDownloadSymlink(ctx.client, remoteEntryPath, localEntryPath, ctx.opts.Symlinks, ctx.result)
+		action, resolved := s.handleDownloadSymlink(ctx.client, remoteEntryPath, localEntryPath, ctx.opts.Symlinks, ctx.result)
 		if action != symlinkFollow {
 			return nil // Skip this entry
 		}
@@ -430,7 +430,7 @@ func (s *Server) processRemoteEntry(ctx *remoteWalkContext, entry os.FileInfo, e
 		return nil
 	}
 
-	downloadSingleFile(ctx.client, remoteEntryPath, localEntryPath, entry, ctx.opts.Preserve, ctx.result)
+	s.downloadSingleFile(ctx.client, remoteEntryPath, localEntryPath, entry, ctx.opts.Preserve, ctx.result)
 	return nil
 }
 
@@ -473,9 +473,9 @@ func buildRelPath(parent, name string) string {
 }
 
 func (s *Server) handleLocalDirCopy(srcPath, dstPath string, opts DirGetOptions) (*mcp.CallToolResult, error) {
-	startTime := time.Now()
+	startTime := s.clock.Now()
 
-	info, err := os.Stat(srcPath)
+	info, err := s.fs.Stat(srcPath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("stat source: %v", err)), nil
 	}
@@ -486,19 +486,19 @@ func (s *Server) handleLocalDirCopy(srcPath, dstPath string, opts DirGetOptions)
 	result := DirTransferResult{Status: "completed"}
 
 	err = filepath.WalkDir(srcPath, func(path string, d fs.DirEntry, walkErr error) error {
-		return processLocalCopyEntry(srcPath, dstPath, path, d, walkErr, opts, &result)
+		return s.processLocalCopyEntry(srcPath, dstPath, path, d, walkErr, opts, &result)
 	})
 
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf(errWalkDir, err)), nil
 	}
 
-	finalizeTransferResult(&result, startTime)
+	s.finalizeTransferResult(&result, startTime)
 	return jsonResult(result)
 }
 
 // processLocalCopyEntry handles a single entry during local directory copy.
-func processLocalCopyEntry(
+func (s *Server) processLocalCopyEntry(
 	srcPath, dstPath, path string,
 	d fs.DirEntry,
 	walkErr error,
@@ -531,31 +531,31 @@ func processLocalCopyEntry(
 	}
 
 	dstEntryPath := filepath.Join(dstPath, relPath)
-	copyLocalFile(path, dstEntryPath, d, opts.Preserve, result)
+	s.copyLocalFile(path, dstEntryPath, d, opts.Preserve, result)
 	return nil
 }
 
 // copyLocalFile copies a single file locally.
-func copyLocalFile(srcPath, dstPath string, d fs.DirEntry, preserve bool, result *DirTransferResult) {
-	if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+func (s *Server) copyLocalFile(srcPath, dstPath string, d fs.DirEntry, preserve bool, result *DirTransferResult) {
+	if err := s.fs.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
 		result.addError(dstPath, err.Error())
 		return
 	}
 
-	data, err := os.ReadFile(srcPath)
+	data, err := s.fs.ReadFile(srcPath)
 	if err != nil {
 		result.addError(srcPath, err.Error())
 		return
 	}
 
 	info, _ := d.Info()
-	if err := os.WriteFile(dstPath, data, info.Mode().Perm()); err != nil {
+	if err := s.fs.WriteFile(dstPath, data, info.Mode().Perm()); err != nil {
 		result.addError(dstPath, err.Error())
 		return
 	}
 
 	if preserve {
-		os.Chtimes(dstPath, info.ModTime(), info.ModTime())
+		s.fs.Chtimes(dstPath, info.ModTime(), info.ModTime())
 	}
 
 	result.FilesTransferred++
@@ -606,14 +606,14 @@ func (s *Server) handleShellDirPut(ctx context.Context, req mcp.CallToolRequest)
 }
 
 func (s *Server) handleSSHDirPut(sess *session.Session, localPath, remotePath string, opts DirPutOptions) (*mcp.CallToolResult, error) {
-	startTime := time.Now()
+	startTime := s.clock.Now()
 
 	sftpClient, err := sess.SFTPClient()
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("get SFTP client: %v", err)), nil
 	}
 
-	info, err := os.Stat(localPath)
+	info, err := s.fs.Stat(localPath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("stat local path: %v", err)), nil
 	}
@@ -642,7 +642,7 @@ func (s *Server) handleSSHDirPut(sess *session.Session, localPath, remotePath st
 		return mcp.NewToolResultError(fmt.Sprintf(errWalkDir, err)), nil
 	}
 
-	finalizeTransferResult(&result, startTime)
+	s.finalizeTransferResult(&result, startTime)
 	return jsonResult(result)
 }
 
@@ -677,7 +677,7 @@ func (s *Server) processUploadEntry(ctx *uploadWalkContext, path string, d fs.Di
 	remoteEntryPath := ctx.remotePath + "/" + strings.ReplaceAll(relPath, "\\", "/")
 
 	if d.Type()&os.ModeSymlink != 0 {
-		action, resolved := handleUploadSymlink(ctx.client, path, remoteEntryPath, ctx.opts.Symlinks, ctx.result)
+		action, resolved := s.handleUploadSymlink(ctx.client, path, remoteEntryPath, ctx.opts.Symlinks, ctx.result)
 		switch action {
 		case symlinkSkip, symlinkHandled, symlinkError:
 			return nil
@@ -697,13 +697,13 @@ func (s *Server) processUploadEntry(ctx *uploadWalkContext, path string, d fs.Di
 	}
 
 	info, _ := d.Info()
-	uploadSingleFile(ctx.client, path, remoteEntryPath, info, ctx.opts, ctx.result)
+	s.uploadSingleFile(ctx.client, path, remoteEntryPath, info, ctx.opts, ctx.result)
 	return nil
 }
 
 // finalizeTransferResult calculates duration and sets final status.
-func finalizeTransferResult(result *DirTransferResult, startTime time.Time) {
-	duration := time.Since(startTime)
+func (s *Server) finalizeTransferResult(result *DirTransferResult, startTime time.Time) {
+	duration := s.clock.Now().Sub(startTime)
 	result.DurationMs = duration.Milliseconds()
 	if duration.Seconds() > 0 {
 		result.BytesPerSecond = int64(float64(result.TotalBytes) / duration.Seconds())

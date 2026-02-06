@@ -3,6 +3,10 @@ package recording
 
 import (
 	"sync"
+
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realclock"
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realfs"
+	"github.com/acolita/claude-shell-mcp/internal/ports"
 )
 
 // Manager manages recorders for multiple sessions.
@@ -11,15 +15,40 @@ type Manager struct {
 	recorders map[string]*Recorder
 	basePath  string
 	enabled   bool
+	fs        ports.FileSystem
+	clock     ports.Clock
+}
+
+// ManagerOption configures a Manager.
+type ManagerOption func(*Manager)
+
+// WithFileSystem sets the filesystem used by Manager.
+func WithFileSystem(fs ports.FileSystem) ManagerOption {
+	return func(m *Manager) {
+		m.fs = fs
+	}
+}
+
+// WithClock sets the clock used by Manager.
+func WithClock(clock ports.Clock) ManagerOption {
+	return func(m *Manager) {
+		m.clock = clock
+	}
 }
 
 // NewManager creates a new recording manager.
-func NewManager(basePath string, enabled bool) *Manager {
-	return &Manager{
+func NewManager(basePath string, enabled bool, opts ...ManagerOption) *Manager {
+	m := &Manager{
 		recorders: make(map[string]*Recorder),
 		basePath:  basePath,
 		enabled:   enabled,
+		fs:        realfs.New(),
+		clock:     realclock.New(),
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // StartRecording starts recording for a session.
@@ -36,7 +65,7 @@ func (m *Manager) StartRecording(sessionID string, width, height int) error {
 		existing.Close()
 	}
 
-	recorder, err := NewRecorder(m.basePath, sessionID, width, height)
+	recorder, err := NewRecorder(m.basePath, sessionID, width, height, m.fs, m.clock)
 	if err != nil {
 		return err
 	}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/acolita/claude-shell-mcp/internal/adapters/realclock"
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realfs"
 	"github.com/acolita/claude-shell-mcp/internal/adapters/realrand"
 	"github.com/acolita/claude-shell-mcp/internal/config"
 	"github.com/acolita/claude-shell-mcp/internal/ports"
@@ -79,6 +80,7 @@ type Session struct {
 	promptDetector *prompt.Detector
 	clock          ports.Clock
 	random         ports.Random
+	fs             ports.FileSystem
 
 	// Pending prompt info when awaiting input
 	pendingPrompt *prompt.Detection
@@ -112,6 +114,13 @@ func WithSessionRandom(random ports.Random) SessionOption {
 	}
 }
 
+// WithSessionFileSystem sets the filesystem for a session.
+func WithSessionFileSystem(fs ports.FileSystem) SessionOption {
+	return func(s *Session) {
+		s.fs = fs
+	}
+}
+
 // WithConfig sets the config for a session.
 func WithConfig(cfg *config.Config) SessionOption {
 	return func(s *Session) {
@@ -138,12 +147,15 @@ func (s *Session) Initialize() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Set default clock and random if not injected
+	// Set default clock, random, and filesystem if not injected
 	if s.clock == nil {
 		s.clock = realclock.New()
 	}
 	if s.random == nil {
 		s.random = realrand.New()
+	}
+	if s.fs == nil {
+		s.fs = realfs.New()
 	}
 
 	// Create prompt detector
@@ -205,7 +217,7 @@ func (s *Session) initializeLocal() error {
 	}
 
 	// Get initial cwd
-	cwd, err := os.Getwd()
+	cwd, err := s.fs.Getwd()
 	if err == nil {
 		s.Cwd = cwd
 	}
@@ -314,10 +326,10 @@ func (s *Session) applyServerAuthConfig(authCfg *ssh.AuthConfig) {
 			authCfg.KeyPath = srv.KeyPath
 		}
 		if srv.Auth.PassphraseEnv != "" {
-			authCfg.KeyPassphrase = os.Getenv(srv.Auth.PassphraseEnv)
+			authCfg.KeyPassphrase = s.fs.Getenv(srv.Auth.PassphraseEnv)
 		}
 		if srv.Auth.PasswordEnv != "" {
-			authCfg.Password = os.Getenv(srv.Auth.PasswordEnv)
+			authCfg.Password = s.fs.Getenv(srv.Auth.PasswordEnv)
 		}
 		break
 	}

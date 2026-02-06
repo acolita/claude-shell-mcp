@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/acolita/claude-shell-mcp/internal/ports"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -33,6 +34,9 @@ type SSHPTY struct {
 	// Read deadline support
 	readDeadline time.Time
 	deadlineMu   sync.Mutex
+
+	// Injected dependencies
+	clock ports.Clock
 }
 
 // SSHPTYOptions configures SSH PTY allocation.
@@ -132,6 +136,7 @@ func NewSSHPTY(client *Client, opts SSHPTYOptions) (*SSHPTY, error) {
 		dataCh:  make(chan []byte, 100), // Buffer up to 100 chunks
 		errCh:   make(chan error, 1),
 		closeCh: make(chan struct{}),
+		clock:   client.clock,
 	}
 
 	// Start background reader
@@ -183,11 +188,11 @@ func (p *SSHPTY) Read(b []byte) (int, error) {
 	// Calculate timeout
 	var timeout <-chan time.Time
 	if !deadline.IsZero() {
-		remaining := time.Until(deadline)
+		remaining := deadline.Sub(p.clock.Now())
 		if remaining <= 0 {
 			return 0, &timeoutError{}
 		}
-		timeout = time.After(remaining)
+		timeout = p.clock.After(remaining)
 	}
 
 	// Wait for data, error, or timeout

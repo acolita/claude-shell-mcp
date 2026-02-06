@@ -7,6 +7,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realclock"
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realsshdialer"
+	"github.com/acolita/claude-shell-mcp/internal/ports"
 	"github.com/acolita/claude-shell-mcp/internal/sftp"
 	"golang.org/x/crypto/ssh"
 )
@@ -28,6 +31,10 @@ type Client struct {
 
 	// Tunnel manager (lazy initialized)
 	tunnelManager *TunnelManager
+
+	// Injected dependencies
+	clock  ports.Clock
+	dialer ports.SSHDialer
 }
 
 // ClientOptions configures SSH client behavior.
@@ -39,6 +46,8 @@ type ClientOptions struct {
 	HostKeyCallback   ssh.HostKeyCallback
 	Timeout           time.Duration
 	KeepaliveInterval time.Duration
+	Clock             ports.Clock
+	Dialer            ports.SSHDialer
 }
 
 // DefaultClientOptions returns default client options.
@@ -82,11 +91,22 @@ func NewClient(opts ClientOptions) (*Client, error) {
 		Timeout:         opts.Timeout,
 	}
 
+	clk := opts.Clock
+	if clk == nil {
+		clk = realclock.New()
+	}
+	dial := opts.Dialer
+	if dial == nil {
+		dial = realsshdialer.New()
+	}
+
 	return &Client{
 		config:            config,
 		host:              opts.Host,
 		port:              opts.Port,
 		keepaliveInterval: opts.KeepaliveInterval,
+		clock:             clk,
+		dialer:            dial,
 	}, nil
 }
 
@@ -100,7 +120,7 @@ func (c *Client) Connect() error {
 	}
 
 	addr := fmt.Sprintf("%s:%d", c.host, c.port)
-	conn, err := ssh.Dial("tcp", addr, c.config)
+	conn, err := c.dialer.Dial("tcp", addr, c.config)
 	if err != nil {
 		return fmt.Errorf("ssh dial %s: %w", addr, err)
 	}
@@ -116,14 +136,14 @@ func (c *Client) Connect() error {
 
 // keepalive sends periodic keepalive requests to prevent connection timeout.
 func (c *Client) keepalive() {
-	ticker := time.NewTicker(c.keepaliveInterval)
+	ticker := c.clock.NewTicker(c.keepaliveInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-c.keepaliveStop:
 			return
-		case <-ticker.C:
+		case <-ticker.C():
 			c.mu.Lock()
 			if c.conn != nil {
 				// Send a keepalive request

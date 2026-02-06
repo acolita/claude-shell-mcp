@@ -7,6 +7,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realclock"
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realsshdialer"
+	"github.com/acolita/claude-shell-mcp/internal/ports"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -53,15 +56,27 @@ type Pool struct {
 	closed      bool
 	done        chan struct{}
 	wg          sync.WaitGroup
+	clock       ports.Clock
+	dialer      ports.SSHDialer
 }
 
 // NewPool creates a new connection pool for the given host.
 func NewPool(clientOpts ClientOptions, config PoolConfig) *Pool {
+	clk := clientOpts.Clock
+	if clk == nil {
+		clk = realclock.New()
+	}
+	dial := clientOpts.Dialer
+	if dial == nil {
+		dial = realsshdialer.New()
+	}
 	p := &Pool{
 		config:      config,
 		clientOpts:  clientOpts,
 		connections: make([]*pooledConn, 0, config.MaxConnections),
 		done:        make(chan struct{}),
+		clock:       clk,
+		dialer:      dial,
 	}
 
 	// Start health check goroutine
@@ -85,7 +100,7 @@ func (p *Pool) Get(ctx context.Context) (*ssh.Client, error) {
 	for _, conn := range p.connections {
 		if !conn.inUse && conn.healthy {
 			conn.inUse = true
-			conn.lastUsed = time.Now()
+			conn.lastUsed = p.clock.Now()
 			p.mu.Unlock()
 
 			slog.Debug("reusing pooled SSH connection",
@@ -111,10 +126,11 @@ func (p *Pool) Get(ctx context.Context) (*ssh.Client, error) {
 	}
 
 	p.mu.Lock()
+	now := p.clock.Now()
 	conn := &pooledConn{
 		client:    client,
-		createdAt: time.Now(),
-		lastUsed:  time.Now(),
+		createdAt: now,
+		lastUsed:  now,
 		inUse:     true,
 		healthy:   true,
 	}
@@ -137,7 +153,7 @@ func (p *Pool) Put(client *ssh.Client) {
 	for _, conn := range p.connections {
 		if conn.client == client {
 			conn.inUse = false
-			conn.lastUsed = time.Now()
+			conn.lastUsed = p.clock.Now()
 			return
 		}
 	}
@@ -243,7 +259,7 @@ func (p *Pool) createConnection(ctx context.Context) (*ssh.Client, error) {
 
 	done := make(chan struct{})
 	go func() {
-		client, err = ssh.Dial("tcp", addr, config)
+		client, err = p.dialer.Dial("tcp", addr, config)
 		close(done)
 	}()
 
@@ -261,14 +277,14 @@ func (p *Pool) createConnection(ctx context.Context) (*ssh.Client, error) {
 func (p *Pool) healthCheck() {
 	defer p.wg.Done()
 
-	ticker := time.NewTicker(p.config.HealthCheckInterval)
+	ticker := p.clock.NewTicker(p.config.HealthCheckInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-p.done:
 			return
-		case <-ticker.C:
+		case <-ticker.C():
 			p.performHealthCheck()
 		}
 	}
@@ -278,7 +294,7 @@ func (p *Pool) performHealthCheck() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	now := time.Now()
+	now := p.clock.Now()
 	toRemove := make([]int, 0)
 
 	for i, conn := range p.connections {

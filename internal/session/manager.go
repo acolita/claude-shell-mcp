@@ -318,6 +318,7 @@ func (m *Manager) getOrCreateControlSessionLocked(opts CreateOptions) (*ControlS
 		User:     opts.User,
 		Password: opts.Password,
 		KeyPath:  opts.KeyPath,
+		Clock:    m.clock,
 	}
 
 	cs, err := NewControlSession(csOpts)

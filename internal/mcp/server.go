@@ -4,6 +4,7 @@ package mcp
 import (
 	"log/slog"
 
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realclock"
 	"github.com/acolita/claude-shell-mcp/internal/adapters/realfs"
 	"github.com/acolita/claude-shell-mcp/internal/config"
 	"github.com/acolita/claude-shell-mcp/internal/ports"
@@ -16,13 +17,14 @@ import (
 // Server wraps the MCP server implementation.
 type Server struct {
 	mcpServer        *server.MCPServer
-	sessionManager   *session.Manager
+	sessionManager   sessionManager
 	sudoCache        *security.SudoCache
 	commandFilter    *security.CommandFilter
 	authRateLimiter  *security.AuthRateLimiter
 	recordingManager *recording.Manager
 	config           *config.Config
 	fs               ports.FileSystem
+	clock            ports.Clock
 }
 
 // ServerOption configures a Server.
@@ -32,6 +34,20 @@ type ServerOption func(*Server)
 func WithFileSystem(fs ports.FileSystem) ServerOption {
 	return func(s *Server) {
 		s.fs = fs
+	}
+}
+
+// WithClock sets the clock used by Server.
+func WithClock(clock ports.Clock) ServerOption {
+	return func(s *Server) {
+		s.clock = clock
+	}
+}
+
+// WithSessionManager sets the session manager used by Server (for testing).
+func WithSessionManager(sm sessionManager) ServerOption {
+	return func(s *Server) {
+		s.sessionManager = sm
 	}
 }
 
@@ -86,7 +102,8 @@ func NewServer(cfg *config.Config, opts ...ServerOption) *Server {
 		authRateLimiter:  security.NewAuthRateLimiter(maxAuthFailures, authLockoutDuration),
 		recordingManager: recording.NewManager(recordingPath, cfg.Recording.Enabled),
 		config:           cfg,
-		fs:               realfs.New(), // default to real filesystem
+		fs:               realfs.New(),
+		clock:            realclock.New(),
 	}
 
 	// Apply options

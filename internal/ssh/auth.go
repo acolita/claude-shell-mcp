@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"fmt"
 	"net"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realfs"
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realnet"
+	"github.com/acolita/claude-shell-mcp/internal/ports"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -20,10 +22,22 @@ type AuthConfig struct {
 	UseAgent      bool   // Use SSH agent for authentication
 	Password      string // Password for password authentication
 	Host          string // Target host for SSH config lookup
+
+	// Injected dependencies (optional, defaults to real implementations)
+	FS     ports.FileSystem   // File system for reading keys/config
+	Dialer ports.NetworkDialer // Network dialer for SSH agent connection
 }
 
 // BuildAuthMethods constructs SSH auth methods from config.
 func BuildAuthMethods(cfg AuthConfig) ([]ssh.AuthMethod, error) {
+	// Default injected dependencies
+	if cfg.FS == nil {
+		cfg.FS = realfs.New()
+	}
+	if cfg.Dialer == nil {
+		cfg.Dialer = realnet.NewDialer()
+	}
+
 	var methods []ssh.AuthMethod
 
 	methods = trySSHAgentAuth(cfg, methods)
@@ -52,7 +66,7 @@ func trySSHAgentAuth(cfg AuthConfig, methods []ssh.AuthMethod) []ssh.AuthMethod 
 	if !cfg.UseAgent {
 		return methods
 	}
-	if agentAuth, err := sshAgentAuth(); err == nil {
+	if agentAuth, err := sshAgentAuth(cfg.FS, cfg.Dialer); err == nil {
 		methods = append(methods, agentAuth)
 	}
 	return methods
@@ -63,7 +77,7 @@ func tryExplicitKeyAuth(cfg AuthConfig) (ssh.AuthMethod, error) {
 	if cfg.KeyPath == "" {
 		return nil, nil
 	}
-	keyAuth, err := privateKeyAuth(cfg.KeyPath, cfg.KeyPassphrase)
+	keyAuth, err := privateKeyAuth(cfg.KeyPath, cfg.KeyPassphrase, cfg.FS)
 	if err != nil {
 		return nil, fmt.Errorf("private key auth: %w", err)
 	}
@@ -75,11 +89,11 @@ func trySSHConfigAuth(cfg AuthConfig, methods []ssh.AuthMethod) []ssh.AuthMethod
 	if cfg.KeyPath != "" || cfg.Host == "" {
 		return methods
 	}
-	configKey := getSSHConfigIdentityFile(cfg.Host)
+	configKey := getSSHConfigIdentityFile(cfg.Host, cfg.FS)
 	if configKey == "" {
 		return methods
 	}
-	if keyAuth, err := privateKeyAuth(configKey, cfg.KeyPassphrase); err == nil {
+	if keyAuth, err := privateKeyAuth(configKey, cfg.KeyPassphrase, cfg.FS); err == nil {
 		methods = append(methods, keyAuth)
 	}
 	return methods
@@ -92,11 +106,11 @@ func tryDefaultKeysAuth(cfg AuthConfig, methods []ssh.AuthMethod) []ssh.AuthMeth
 	}
 	defaultKeys := []string{"~/.ssh/id_ed25519", "~/.ssh/id_rsa", "~/.ssh/id_ecdsa"}
 	for _, keyPath := range defaultKeys {
-		expanded := expandPath(keyPath)
-		if _, err := os.Stat(expanded); err != nil {
+		expanded := expandPathWithFS(keyPath, cfg.FS)
+		if _, err := cfg.FS.Stat(expanded); err != nil {
 			continue
 		}
-		if keyAuth, err := privateKeyAuth(expanded, cfg.KeyPassphrase); err == nil {
+		if keyAuth, err := privateKeyAuth(expanded, cfg.KeyPassphrase, cfg.FS); err == nil {
 			return append(methods, keyAuth)
 		}
 	}
@@ -114,13 +128,13 @@ func tryPasswordAuth(cfg AuthConfig, methods []ssh.AuthMethod) []ssh.AuthMethod 
 }
 
 // sshAgentAuth returns an SSH agent auth method.
-func sshAgentAuth() (ssh.AuthMethod, error) {
-	socket := os.Getenv("SSH_AUTH_SOCK")
+func sshAgentAuth(fs ports.FileSystem, dialer ports.NetworkDialer) (ssh.AuthMethod, error) {
+	socket := fs.Getenv("SSH_AUTH_SOCK")
 	if socket == "" {
 		return nil, fmt.Errorf("SSH_AUTH_SOCK not set")
 	}
 
-	conn, err := net.Dial("unix", socket)
+	conn, err := dialer.Dial("unix", socket)
 	if err != nil {
 		return nil, fmt.Errorf("dial agent: %w", err)
 	}
@@ -130,10 +144,10 @@ func sshAgentAuth() (ssh.AuthMethod, error) {
 }
 
 // privateKeyAuth returns a private key auth method.
-func privateKeyAuth(keyPath, passphrase string) (ssh.AuthMethod, error) {
-	expanded := expandPath(keyPath)
+func privateKeyAuth(keyPath, passphrase string, fs ports.FileSystem) (ssh.AuthMethod, error) {
+	expanded := expandPathWithFS(keyPath, fs)
 
-	keyData, err := os.ReadFile(expanded)
+	keyData, err := fs.ReadFile(expanded)
 	if err != nil {
 		return nil, fmt.Errorf("read key file: %w", err)
 	}
@@ -152,15 +166,23 @@ func privateKeyAuth(keyPath, passphrase string) (ssh.AuthMethod, error) {
 }
 
 // BuildHostKeyCallback creates a host key callback from known_hosts.
-func BuildHostKeyCallback(knownHostsPath string) (ssh.HostKeyCallback, error) {
+// An optional FileSystem can be passed; if not provided, defaults to real filesystem.
+func BuildHostKeyCallback(knownHostsPath string, fsys ...ports.FileSystem) (ssh.HostKeyCallback, error) {
+	var fs ports.FileSystem
+	if len(fsys) > 0 && fsys[0] != nil {
+		fs = fsys[0]
+	} else {
+		fs = realfs.New()
+	}
+
 	if knownHostsPath == "" {
 		knownHostsPath = "~/.ssh/known_hosts"
 	}
 
-	expanded := expandPath(knownHostsPath)
+	expanded := expandPathWithFS(knownHostsPath, fs)
 
 	// Check if known_hosts exists
-	if _, err := os.Stat(expanded); os.IsNotExist(err) {
+	if _, err := fs.Stat(expanded); err != nil {
 		// Return a callback that accepts any host key but logs a warning
 		return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 			// In production, you might want to prompt the user or auto-add
@@ -182,10 +204,15 @@ func InsecureHostKeyCallback() ssh.HostKeyCallback {
 	return ssh.InsecureIgnoreHostKey()
 }
 
-// expandPath expands ~ to home directory.
+// expandPath expands ~ to home directory using real filesystem.
 func expandPath(path string) string {
+	return expandPathWithFS(path, realfs.New())
+}
+
+// expandPathWithFS expands ~ to home directory using the given filesystem.
+func expandPathWithFS(path string, fs ports.FileSystem) string {
 	if strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
+		home, err := fs.UserHomeDir()
 		if err == nil {
 			return filepath.Join(home, path[2:])
 		}
@@ -194,9 +221,9 @@ func expandPath(path string) string {
 }
 
 // getSSHConfigIdentityFile parses ~/.ssh/config and returns the IdentityFile for a host.
-func getSSHConfigIdentityFile(host string) string {
-	configPath := expandPath("~/.ssh/config")
-	file, err := os.Open(configPath)
+func getSSHConfigIdentityFile(host string, fs ports.FileSystem) string {
+	configPath := expandPathWithFS("~/.ssh/config", fs)
+	file, err := fs.Open(configPath)
 	if err != nil {
 		return ""
 	}
@@ -230,7 +257,7 @@ func getSSHConfigIdentityFile(host string) string {
 			matchesHost = matchSSHHostPattern(host, currentHost)
 		case "identityfile":
 			if matchesHost {
-				return expandPath(value)
+				return expandPathWithFS(value, fs)
 			}
 		}
 	}

@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realnet"
+	"github.com/acolita/claude-shell-mcp/internal/ports"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -37,6 +39,7 @@ type Tunnel struct {
 
 	listener  net.Listener
 	sshClient *ssh.Client
+	dialer    ports.NetworkDialer
 	ctx       context.Context
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
@@ -48,14 +51,35 @@ type TunnelManager struct {
 	tunnels   map[string]*Tunnel
 	mu        sync.RWMutex
 	nextID    int
+	dialer    ports.NetworkDialer
+	listener  ports.NetworkListener
+}
+
+// TunnelManagerOption configures a TunnelManager.
+type TunnelManagerOption func(*TunnelManager)
+
+// WithTunnelDialer sets the network dialer for the tunnel manager.
+func WithTunnelDialer(d ports.NetworkDialer) TunnelManagerOption {
+	return func(tm *TunnelManager) { tm.dialer = d }
+}
+
+// WithTunnelListener sets the network listener for the tunnel manager.
+func WithTunnelListener(l ports.NetworkListener) TunnelManagerOption {
+	return func(tm *TunnelManager) { tm.listener = l }
 }
 
 // NewTunnelManager creates a new tunnel manager.
-func NewTunnelManager(sshClient *ssh.Client) *TunnelManager {
-	return &TunnelManager{
+func NewTunnelManager(sshClient *ssh.Client, opts ...TunnelManagerOption) *TunnelManager {
+	tm := &TunnelManager{
 		sshClient: sshClient,
 		tunnels:   make(map[string]*Tunnel),
+		dialer:    realnet.NewDialer(),
+		listener:  realnet.NewListener(),
 	}
+	for _, opt := range opts {
+		opt(tm)
+	}
+	return tm
 }
 
 // CreateLocalTunnel creates a local port forward (-L).
@@ -66,7 +90,7 @@ func (tm *TunnelManager) CreateLocalTunnel(localHost string, localPort int, remo
 
 	// Listen locally
 	localAddr := fmt.Sprintf("%s:%d", localHost, localPort)
-	listener, err := net.Listen("tcp", localAddr)
+	listener, err := tm.listener.Listen("tcp", localAddr)
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", localAddr, err)
 	}
@@ -88,6 +112,7 @@ func (tm *TunnelManager) CreateLocalTunnel(localHost string, localPort int, remo
 		RemotePort: remotePort,
 		listener:   listener,
 		sshClient:  tm.sshClient,
+		dialer:     tm.dialer,
 		ctx:        ctx,
 		cancel:     cancel,
 	}
@@ -137,6 +162,7 @@ func (tm *TunnelManager) CreateReverseTunnel(remoteHost string, remotePort int, 
 		RemotePort: actualPort,
 		listener:   listener,
 		sshClient:  tm.sshClient,
+		dialer:     tm.dialer,
 		ctx:        ctx,
 		cancel:     cancel,
 	}
@@ -307,7 +333,7 @@ func (t *Tunnel) handleReverseConnection(remoteConn net.Conn) {
 
 	// Connect to local target
 	localAddr := fmt.Sprintf("%s:%d", t.LocalHost, t.LocalPort)
-	localConn, err := net.Dial("tcp", localAddr)
+	localConn, err := t.dialer.Dial("tcp", localAddr)
 	if err != nil {
 		slog.Warn("failed to dial local",
 			slog.String("id", t.ID),

@@ -32,6 +32,11 @@ func (f *FS) Stat(name string) (fs.FileInfo, error) {
 	return os.Stat(name)
 }
 
+// Lstat returns file info without following symlinks.
+func (f *FS) Lstat(name string) (fs.FileInfo, error) {
+	return os.Lstat(name)
+}
+
 // MkdirAll creates a directory and all parent directories.
 func (f *FS) MkdirAll(path string, perm fs.FileMode) error {
 	return os.MkdirAll(path, perm)
@@ -65,6 +70,36 @@ func (f *FS) Getenv(key string) string {
 // Getwd returns the current working directory.
 func (f *FS) Getwd() (string, error) {
 	return os.Getwd()
+}
+
+// Open opens the named file for reading.
+func (f *FS) Open(name string) (ports.FileHandle, error) {
+	return os.Open(name)
+}
+
+// Create creates or truncates the named file.
+func (f *FS) Create(name string) (ports.FileHandle, error) {
+	return os.Create(name)
+}
+
+// OpenFile opens the named file with specified flag and perm.
+func (f *FS) OpenFile(name string, flag int, perm fs.FileMode) (ports.FileHandle, error) {
+	return os.OpenFile(name, flag, perm)
+}
+
+// Symlink creates newname as a symbolic link to oldname.
+func (f *FS) Symlink(oldname, newname string) error {
+	return os.Symlink(oldname, newname)
+}
+
+// Readlink returns the destination of the named symbolic link.
+func (f *FS) Readlink(name string) (string, error) {
+	return os.Readlink(name)
+}
+
+// Executable returns the path of the current executable.
+func (f *FS) Executable() (string, error) {
+	return os.Executable()
 }
 
 // Ensure FS implements ports.FileSystem.

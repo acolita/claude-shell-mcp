@@ -7,14 +7,10 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/acolita/claude-shell-mcp/internal/session"
 	"github.com/mark3labs/mcp-go/mcp"
 )
-
-// timeNow is a variable for testing - allows injecting fake time.
-var timeNow = time.Now
 
 const (
 	// saveToFileThreshold is the size at which we save full output to a file.
@@ -525,7 +521,7 @@ func (s *Server) saveOutputToFile(sessionID, output string) (string, error) {
 	}
 
 	// Generate unique filename: session_timestamp.txt
-	timestamp := fmt.Sprintf("%d", timeNow().UnixMilli())
+	timestamp := fmt.Sprintf("%d", s.clock.Now().UnixMilli())
 	filename := fmt.Sprintf("%s_%s.txt", sessionID, timestamp)
 	filepath := outputDir + "/" + filename
 

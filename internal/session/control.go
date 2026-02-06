@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realclock"
+	"github.com/acolita/claude-shell-mcp/internal/ports"
 	localpty "github.com/acolita/claude-shell-mcp/internal/pty"
 	"github.com/acolita/claude-shell-mcp/internal/ssh"
 )
@@ -24,6 +26,7 @@ type ControlSession struct {
 	pty       PTY
 	sshClient *ssh.Client
 	mu        sync.Mutex
+	clock     ports.Clock
 
 	// SSH connection info (for ssh mode)
 	port     int
@@ -40,6 +43,7 @@ type ControlSessionOptions struct {
 	User     string
 	Password string
 	KeyPath  string
+	Clock    ports.Clock
 }
 
 // NewControlSession creates a new control session.
@@ -51,8 +55,12 @@ func NewControlSession(opts ControlSessionOptions) (*ControlSession, error) {
 		user:     opts.User,
 		password: opts.Password,
 		keyPath:  opts.KeyPath,
+		clock:    opts.Clock,
 	}
 
+	if cs.clock == nil {
+		cs.clock = realclock.New()
+	}
 	if cs.mode == "" {
 		cs.mode = "local"
 	}
@@ -88,7 +96,7 @@ func (cs *ControlSession) initializeLocal() error {
 	cs.pty = pty
 
 	// Wait for shell to be ready
-	time.Sleep(100 * time.Millisecond)
+	cs.clock.Sleep(100 * time.Millisecond)
 	cs.drainOutput()
 
 	return nil
@@ -153,7 +161,7 @@ func (cs *ControlSession) initializeSSH() error {
 	cs.pty = pty
 
 	// Wait for shell to be ready
-	time.Sleep(200 * time.Millisecond)
+	cs.clock.Sleep(200 * time.Millisecond)
 	cs.drainOutput()
 
 	return nil
@@ -169,7 +177,7 @@ func (cs *ControlSession) Exec(ctx context.Context, command string) (string, err
 	cs.drainOutputLocked()
 
 	// Use a unique marker to detect command completion
-	marker := fmt.Sprintf("__CTRL_%d__", time.Now().UnixNano())
+	marker := fmt.Sprintf("__CTRL_%d__", cs.clock.Now().UnixNano())
 	fullCmd := fmt.Sprintf("%s; echo %s $?", command, marker)
 
 	// Write command
@@ -178,7 +186,7 @@ func (cs *ControlSession) Exec(ctx context.Context, command string) (string, err
 	}
 
 	// Give the shell time to process the command
-	time.Sleep(50 * time.Millisecond)
+	cs.clock.Sleep(50 * time.Millisecond)
 
 	// Read output until marker
 	var output bytes.Buffer
@@ -195,7 +203,7 @@ func (cs *ControlSession) Exec(ctx context.Context, command string) (string, err
 		default:
 		}
 
-		cs.pty.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		cs.pty.SetReadDeadline(cs.clock.Now().Add(200 * time.Millisecond))
 		n, err := cs.pty.Read(buf)
 		if err != nil && !os.IsTimeout(err) && err != io.EOF && !isTimeoutError(err) {
 			return output.String(), fmt.Errorf("read output: %w", err)
@@ -234,7 +242,7 @@ func (cs *ControlSession) ExecRaw(ctx context.Context, command string) (string, 
 	cs.drainOutputLocked()
 
 	// Use a unique marker to detect command completion
-	marker := fmt.Sprintf("__CTRL_%d__", time.Now().UnixNano())
+	marker := fmt.Sprintf("__CTRL_%d__", cs.clock.Now().UnixNano())
 	fullCmd := fmt.Sprintf("%s; echo %s $?", command, marker)
 
 	// Write command
@@ -243,7 +251,7 @@ func (cs *ControlSession) ExecRaw(ctx context.Context, command string) (string, 
 	}
 
 	// Give the shell time to process the command
-	time.Sleep(50 * time.Millisecond)
+	cs.clock.Sleep(50 * time.Millisecond)
 
 	// Read output until marker
 	var output bytes.Buffer
@@ -260,7 +268,7 @@ func (cs *ControlSession) ExecRaw(ctx context.Context, command string) (string, 
 		default:
 		}
 
-		cs.pty.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		cs.pty.SetReadDeadline(cs.clock.Now().Add(200 * time.Millisecond))
 		n, err := cs.pty.Read(buf)
 		if err != nil && !os.IsTimeout(err) && err != io.EOF && !isTimeoutError(err) {
 			return output.String(), fmt.Errorf("read output: %w", err)
@@ -330,7 +338,7 @@ func (cs *ControlSession) drainOutput() {
 func (cs *ControlSession) drainOutputLocked() {
 	buf := make([]byte, 4096)
 	for i := 0; i < 10; i++ {
-		cs.pty.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+		cs.pty.SetReadDeadline(cs.clock.Now().Add(50 * time.Millisecond))
 		n, err := cs.pty.Read(buf)
 		if err != nil || n == 0 {
 			break
