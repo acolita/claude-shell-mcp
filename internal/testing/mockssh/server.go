@@ -221,17 +221,17 @@ func (s *Server) handlePtyReq(req *ssh.Request) *ptyRequest {
 
 // handleShellReq processes a shell request.
 func (s *Server) handleShellReq(req *ssh.Request, sess *session, ptyReq *ptyRequest) {
+	replyIfWanted(req, true)
 	if ptyReq != nil {
 		s.handleShell(sess, ptyReq)
 	}
-	replyIfWanted(req, true)
 }
 
 // handleExecReq processes an exec request.
 func (s *Server) handleExecReq(req *ssh.Request, sess *session, ptyReq *ptyRequest) {
 	cmd := parseExecRequest(req.Payload)
-	s.handleExec(sess, cmd, ptyReq)
 	replyIfWanted(req, true)
+	s.handleExec(sess, cmd, ptyReq)
 }
 
 // handleWindowChangeReq processes a window-change request.

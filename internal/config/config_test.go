@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -395,18 +396,22 @@ func TestWatcherReloadInvalidConfig(t *testing.T) {
 	path := filepath.Join(tmp, "config.yaml")
 	writeConfigFile(t, path, "mode: local\n")
 
-	callCount := 0
-	var mu sync.Mutex
+	var counting atomic.Bool
+	var callCount atomic.Int32
 
 	w, err := NewWatcher(path, func(cfg *Config) {
-		mu.Lock()
-		callCount++
-		mu.Unlock()
+		if counting.Load() {
+			callCount.Add(1)
+		}
 	})
 	if err != nil {
 		t.Fatalf("NewWatcher() error: %v", err)
 	}
 	defer w.Close()
+
+	// Wait for any initial fsnotify events to drain, then start counting
+	time.Sleep(500 * time.Millisecond)
+	counting.Store(true)
 
 	// Write invalid YAML - reload should fail silently (log error)
 	writeConfigFile(t, path, ":::invalid{{{")
@@ -419,11 +424,9 @@ func TestWatcherReloadInvalidConfig(t *testing.T) {
 		t.Errorf("Config().Mode = %q, want %q (preserved after bad reload)", cfg.Mode, "local")
 	}
 
-	mu.Lock()
-	if callCount > 0 {
-		t.Errorf("onChange was called %d times, want 0 (invalid config should not trigger)", callCount)
+	if c := callCount.Load(); c > 0 {
+		t.Errorf("onChange was called %d times, want 0 (invalid config should not trigger)", c)
 	}
-	mu.Unlock()
 }
 
 func TestWatcherReloadInvalidMode(t *testing.T) {
