@@ -72,12 +72,12 @@ func (m *Manager) Get(id string) (*session.Session, error) {
 	defer m.mu.Unlock()
 
 	if m.closed[id] {
-		return nil, fmt.Errorf("session not found: %s", id)
+		return nil, fmt.Errorf(errSessionNotFoundFmt, id)
 	}
 
 	sess, ok := m.sessions[id]
 	if !ok {
-		return nil, fmt.Errorf("session not found: %s", id)
+		return nil, fmt.Errorf(errSessionNotFoundFmt, id)
 	}
 	return sess, nil
 }
@@ -88,7 +88,7 @@ func (m *Manager) Close(id string) error {
 	defer m.mu.Unlock()
 
 	if _, ok := m.sessions[id]; !ok {
-		return fmt.Errorf("session not found: %s", id)
+		return fmt.Errorf(errSessionNotFoundFmt, id)
 	}
 
 	m.closed[id] = true

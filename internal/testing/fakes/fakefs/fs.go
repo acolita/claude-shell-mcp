@@ -386,14 +386,14 @@ type fakeFileHandle struct {
 
 func (fh *fakeFileHandle) Read(b []byte) (int, error) {
 	if fh.closed {
-		return 0, fmt.Errorf("file closed")
+		return 0, fmt.Errorf(errFileClosed)
 	}
 	return fh.reader.Read(b)
 }
 
 func (fh *fakeFileHandle) Write(b []byte) (int, error) {
 	if fh.closed {
-		return 0, fmt.Errorf("file closed")
+		return 0, fmt.Errorf(errFileClosed)
 	}
 	pos, _ := fh.reader.Seek(0, io.SeekCurrent)
 	// Extend data if writing past end
@@ -411,7 +411,7 @@ func (fh *fakeFileHandle) Write(b []byte) (int, error) {
 
 func (fh *fakeFileHandle) Seek(offset int64, whence int) (int64, error) {
 	if fh.closed {
-		return 0, fmt.Errorf("file closed")
+		return 0, fmt.Errorf(errFileClosed)
 	}
 	return fh.reader.Seek(offset, whence)
 }
@@ -434,14 +434,14 @@ func (fh *fakeFileHandle) Close() error {
 
 func (fh *fakeFileHandle) ReadAt(b []byte, off int64) (int, error) {
 	if fh.closed {
-		return 0, fmt.Errorf("file closed")
+		return 0, fmt.Errorf(errFileClosed)
 	}
 	return fh.reader.ReadAt(b, off)
 }
 
 func (fh *fakeFileHandle) WriteAt(b []byte, off int64) (int, error) {
 	if fh.closed {
-		return 0, fmt.Errorf("file closed")
+		return 0, fmt.Errorf(errFileClosed)
 	}
 	endPos := off + int64(len(b))
 	if endPos > int64(len(fh.data)) {
@@ -456,7 +456,7 @@ func (fh *fakeFileHandle) WriteAt(b []byte, off int64) (int, error) {
 
 func (fh *fakeFileHandle) Truncate(size int64) error {
 	if fh.closed {
-		return fmt.Errorf("file closed")
+		return fmt.Errorf(errFileClosed)
 	}
 	if size < int64(len(fh.data)) {
 		fh.data = fh.data[:size]
