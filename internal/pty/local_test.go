@@ -3,6 +3,7 @@ package pty
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -414,9 +415,14 @@ func TestLocalPTY_Wait(t *testing.T) {
 		t.Fatalf("NewLocalPTY: %v", err)
 	}
 
-	// Tell the shell to exit, then wait
+	// Tell the shell to exit
 	time.Sleep(200 * time.Millisecond)
 	_, _ = p.WriteString("exit 0\n")
+	time.Sleep(200 * time.Millisecond)
+
+	// Close the PTY master fd to unblock the shell. On macOS, the shell may
+	// block writing to the PTY if the read side isn't drained.
+	_ = p.pty.Close()
 
 	// Wait should return once the shell exits
 	done := make(chan error, 1)
@@ -432,12 +438,23 @@ func TestLocalPTY_Wait(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Wait() timed out")
 	}
-
-	p.Close() //nolint:errcheck
 }
 
 func TestLocalPTY_Dir(t *testing.T) {
-	dir := os.TempDir()
+	// Create a uniquely-named temp dir to avoid symlink resolution issues
+	// on macOS (where /tmp -> /private/var/folders/...).
+	dir, err := os.MkdirTemp("", "pty-dir-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	// Resolve symlinks so we match what pwd will output
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+
 	p, err := NewLocalPTY(PTYOptions{
 		Shell: "/bin/sh",
 		Dir:   dir,
@@ -450,10 +467,10 @@ func TestLocalPTY_Dir(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	// Print working directory and look for temp path in output
-	output, found := waitForOutput(p, "pwd\n", "tmp", 5*time.Second)
+	// Print working directory and look for the resolved path in output
+	output, found := waitForOutput(p, "pwd\n", resolved, 5*time.Second)
 	if !found {
-		t.Errorf("expected pwd output to contain tmp dir, got %q", output)
+		t.Errorf("expected pwd output to contain %q, got %q", resolved, output)
 	}
 }
 
@@ -484,11 +501,24 @@ func TestLocalPTY_SignalAfterExit(t *testing.T) {
 		t.Fatalf("NewLocalPTY: %v", err)
 	}
 
-	// Tell the shell to exit and wait for it to be fully reaped
+	// Tell the shell to exit
 	time.Sleep(200 * time.Millisecond)
 	_, _ = p.WriteString("exit 0\n")
-	_ = p.Wait()  // reap the process so it is fully finished
-	p.Close()     //nolint:errcheck
+	time.Sleep(200 * time.Millisecond)
+
+	// Close PTY master to unblock Wait on macOS (shell may block on PTY write)
+	_ = p.pty.Close()
+
+	// Reap the process so it is fully finished
+	done := make(chan error, 1)
+	go func() {
+		done <- p.Wait()
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait() timed out")
+	}
 
 	// Signal after process has exited and been waited on should return an error
 	err = p.Signal(syscall.SIGWINCH)

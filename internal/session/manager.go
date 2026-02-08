@@ -4,6 +4,7 @@ package session
 import (
 	"encoding/hex"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -11,7 +12,13 @@ import (
 	"github.com/acolita/claude-shell-mcp/internal/adapters/realrand"
 	"github.com/acolita/claude-shell-mcp/internal/config"
 	"github.com/acolita/claude-shell-mcp/internal/ports"
+	localpty "github.com/acolita/claude-shell-mcp/internal/pty"
 )
+
+// LocalPTYFactory creates a local PTY and returns (pty, shell name, error).
+// The default implementation uses localpty.NewLocalPTY. Tests can inject
+// a fake factory to avoid spawning real shells.
+type LocalPTYFactory func(opts localpty.PTYOptions) (PTY, string, error)
 
 // Manager manages shell sessions.
 type Manager struct {
@@ -22,6 +29,7 @@ type Manager struct {
 	config          *config.Config
 	clock           ports.Clock
 	random          ports.Random
+	localPTYFactory LocalPTYFactory
 }
 
 // ManagerOption configures a Manager.
@@ -48,6 +56,14 @@ func WithManagerStore(store *SessionStore) ManagerOption {
 	}
 }
 
+// WithLocalPTYFactory sets the factory for creating local PTY sessions.
+// Use this in tests to inject a fake PTY factory that avoids spawning real shells.
+func WithLocalPTYFactory(factory LocalPTYFactory) ManagerOption {
+	return func(m *Manager) {
+		m.localPTYFactory = factory
+	}
+}
+
 // NewManager creates a new session manager.
 func NewManager(cfg *config.Config, opts ...ManagerOption) *Manager {
 	m := &Manager{
@@ -67,6 +83,11 @@ func NewManager(cfg *config.Config, opts ...ManagerOption) *Manager {
 		m.store = NewSessionStore()
 	}
 
+	// Default local PTY factory creates real PTYs
+	if m.localPTYFactory == nil {
+		m.localPTYFactory = defaultLocalPTYFactory
+	}
+
 	return m
 }
 
@@ -82,17 +103,18 @@ func (m *Manager) Create(opts CreateOptions) (*Session, error) {
 
 	id := m.generateSessionID()
 	sess := &Session{
-		ID:       id,
-		State:    StateIdle,
-		Mode:     opts.Mode,
-		Host:     opts.Host,
-		Port:     opts.Port,
-		User:     opts.User,
-		Password: opts.Password,
-		KeyPath:  opts.KeyPath,
-		config:   m.config,
-		clock:    m.clock,
-		random:   m.random,
+		ID:              id,
+		State:           StateIdle,
+		Mode:            opts.Mode,
+		Host:            opts.Host,
+		Port:            opts.Port,
+		User:            opts.User,
+		Password:        opts.Password,
+		KeyPath:         opts.KeyPath,
+		config:          m.config,
+		clock:           m.clock,
+		random:          m.random,
+		localPTYFactory: m.localPTYFactory,
 	}
 
 	// Initialize the session (creates PTY/SSH connection)
@@ -150,18 +172,19 @@ func (m *Manager) recover(id string) (*Session, error) {
 
 	// Recreate the session with stored metadata
 	sess := &Session{
-		ID:           id, // Use the same ID!
-		State:        StateIdle,
-		Mode:         meta.Mode,
-		Host:         meta.Host,
-		Port:         meta.Port,
-		User:         meta.User,
-		KeyPath:      meta.KeyPath,
-		Cwd:          meta.Cwd,
-		SavedTunnels: meta.Tunnels, // Saved tunnels for user to restore
-		config:       m.config,
-		clock:        m.clock,
-		random:       m.random,
+		ID:              id, // Use the same ID!
+		State:           StateIdle,
+		Mode:            meta.Mode,
+		Host:            meta.Host,
+		Port:            meta.Port,
+		User:            meta.User,
+		KeyPath:         meta.KeyPath,
+		Cwd:             meta.Cwd,
+		SavedTunnels:    meta.Tunnels, // Saved tunnels for user to restore
+		config:          m.config,
+		clock:           m.clock,
+		random:          m.random,
+		localPTYFactory: m.localPTYFactory,
 	}
 
 	// Initialize the session (creates PTY/SSH connection)
@@ -279,6 +302,30 @@ func (m *Manager) generateSessionID() string {
 	return "sess_" + hex.EncodeToString(b)
 }
 
+// defaultLocalPTYFactory creates a real local PTY and wraps it in the PTY interface.
+func defaultLocalPTYFactory(opts localpty.PTYOptions) (PTY, string, error) {
+	p, err := localpty.NewLocalPTY(opts)
+	if err != nil {
+		return nil, "", err
+	}
+	adapter := &localPTYAdapter{pty: p}
+	return adapter, p.Shell(), nil
+}
+
+// localPTYFile extracts the underlying *os.File from a PTY if possible.
+// Returns nil if the PTY doesn't support it (e.g., fakes).
+func localPTYFile(p PTY) *os.File {
+	type filer interface {
+		File() *os.File
+	}
+	if a, ok := p.(*localPTYAdapter); ok {
+		if f, ok2 := a.pty.(filer); ok2 {
+			return f.File()
+		}
+	}
+	return nil
+}
+
 // CreateOptions defines options for creating a session.
 type CreateOptions struct {
 	Mode     string // "local" or "ssh"
@@ -312,13 +359,14 @@ func (m *Manager) getOrCreateControlSessionLocked(opts CreateOptions) (*ControlS
 
 	// Create new control session
 	csOpts := ControlSessionOptions{
-		Mode:     opts.Mode,
-		Host:     opts.Host,
-		Port:     opts.Port,
-		User:     opts.User,
-		Password: opts.Password,
-		KeyPath:  opts.KeyPath,
-		Clock:    m.clock,
+		Mode:            opts.Mode,
+		Host:            opts.Host,
+		Port:            opts.Port,
+		User:            opts.User,
+		Password:        opts.Password,
+		KeyPath:         opts.KeyPath,
+		Clock:           m.clock,
+		LocalPTYFactory: m.localPTYFactory,
 	}
 
 	cs, err := NewControlSession(csOpts)

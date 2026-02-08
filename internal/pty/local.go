@@ -22,6 +22,11 @@ type LocalPTY struct {
 
 	// Output buffer for reading
 	outputBuf []byte
+
+	// readDeadline stores the deadline for read operations.
+	// macOS PTY fds don't support os.File.SetReadDeadline, so we store it
+	// here as a soft fallback (matching the SSH PTY pattern).
+	readDeadline time.Time
 }
 
 // PTYOptions configures PTY allocation.
@@ -216,8 +221,18 @@ func (p *LocalPTY) Fd() uintptr {
 }
 
 // SetReadDeadline sets a deadline for read operations.
+// On macOS, PTY file descriptors don't support OS-level deadlines, so we
+// store the deadline in a field (matching the SSH PTY pattern) and return nil.
+// Callers already use goroutine-based timeouts for actual enforcement.
 func (p *LocalPTY) SetReadDeadline(t time.Time) error {
-	return p.pty.SetReadDeadline(t)
+	if err := p.pty.SetReadDeadline(t); err != nil {
+		// Fallback: store deadline locally (macOS PTYs don't support file deadlines)
+		p.mu.Lock()
+		p.readDeadline = t
+		p.mu.Unlock()
+		return nil
+	}
+	return nil
 }
 
 // File returns the underlying file of the PTY.

@@ -88,6 +88,9 @@ type Session struct {
 
 	// Control session reference for process management
 	controlSession *ControlSession
+
+	// localPTYFactory creates local PTYs (injectable for testing)
+	localPTYFactory LocalPTYFactory
 }
 
 // SessionOption configures a Session.
@@ -197,19 +200,25 @@ func (s *Session) initializeLocal() error {
 		opts.NoRC = !s.config.Shell.SourceRC
 	}
 
-	localPTY, err := localpty.NewLocalPTY(opts)
+	// Use injected factory if available, otherwise use default
+	factory := s.localPTYFactory
+	if factory == nil {
+		factory = defaultLocalPTYFactory
+	}
+
+	pty, shell, err := factory(opts)
 	if err != nil {
 		return fmt.Errorf("create local pty: %w", err)
 	}
 
-	s.pty = &localPTYAdapter{pty: localPTY}
-	s.Shell = localPTY.Shell()
+	s.pty = pty
+	s.Shell = shell
 	s.State = StateIdle
 	s.CreatedAt = s.clock.Now()
 	s.LastUsed = s.clock.Now()
 
 	// Get PTY name for control plane (e.g., "3" from "/dev/pts/3")
-	if f := localPTY.File(); f != nil {
+	if f := localPTYFile(pty); f != nil {
 		ptyPath := f.Name()
 		if strings.HasPrefix(ptyPath, devPtsPrefix) {
 			s.PTYName = strings.TrimPrefix(ptyPath, devPtsPrefix)

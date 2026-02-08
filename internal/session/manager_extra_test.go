@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/acolita/claude-shell-mcp/internal/config"
+	localpty "github.com/acolita/claude-shell-mcp/internal/pty"
 	"github.com/acolita/claude-shell-mcp/internal/testing/fakes/fakeclock"
 	"github.com/acolita/claude-shell-mcp/internal/testing/fakes/fakefs"
 	"github.com/acolita/claude-shell-mcp/internal/testing/fakes/fakepty"
@@ -14,6 +15,12 @@ import (
 )
 
 // --- helpers ---
+
+// fakePTYFactory returns a LocalPTYFactory that creates fakepty instances
+// instead of spawning real shells. This prevents tests from hanging on macOS.
+func fakePTYFactory(opts localpty.PTYOptions) (PTY, string, error) {
+	return fakepty.New(), "/bin/sh", nil
+}
 
 // newTestManager creates a Manager configured with fakes for testing.
 // It returns the manager, the fake clock, and the fake random source.
@@ -25,6 +32,7 @@ func newTestManager(cfg *config.Config) (*Manager, *fakeclock.Clock, *fakerand.R
 		WithManagerClock(clock),
 		WithManagerRandom(rand),
 		WithManagerStore(NewSessionStore(WithFileSystem(fs), WithStorePath("/tmp/test-sessions.json"))),
+		WithLocalPTYFactory(fakePTYFactory),
 	)
 	return mgr, clock, rand
 }

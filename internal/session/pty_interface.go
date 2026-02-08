@@ -60,7 +60,9 @@ func (a *localPTYAdapter) Close() error {
 
 func (a *localPTYAdapter) SetReadDeadline(t time.Time) error {
 	if f := a.pty.File(); f != nil {
-		return f.SetReadDeadline(t)
+		// Ignore error — macOS PTY fds don't support OS-level deadlines.
+		// Callers use goroutine-based timeouts for actual enforcement.
+		_ = f.SetReadDeadline(t)
 	}
 	return nil
 }

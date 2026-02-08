@@ -33,29 +33,34 @@ type ControlSession struct {
 	user     string
 	password string
 	keyPath  string
+
+	// localPTYFactory creates local PTYs (injectable for testing)
+	localPTYFactory LocalPTYFactory
 }
 
 // ControlSessionOptions defines options for creating a control session.
 type ControlSessionOptions struct {
-	Mode     string // "local" or "ssh"
-	Host     string
-	Port     int
-	User     string
-	Password string
-	KeyPath  string
-	Clock    ports.Clock
+	Mode            string // "local" or "ssh"
+	Host            string
+	Port            int
+	User            string
+	Password        string
+	KeyPath         string
+	Clock           ports.Clock
+	LocalPTYFactory LocalPTYFactory
 }
 
 // NewControlSession creates a new control session.
 func NewControlSession(opts ControlSessionOptions) (*ControlSession, error) {
 	cs := &ControlSession{
-		mode:     opts.Mode,
-		host:     opts.Host,
-		port:     opts.Port,
-		user:     opts.User,
-		password: opts.Password,
-		keyPath:  opts.KeyPath,
-		clock:    opts.Clock,
+		mode:            opts.Mode,
+		host:            opts.Host,
+		port:            opts.Port,
+		user:            opts.User,
+		password:        opts.Password,
+		keyPath:         opts.KeyPath,
+		clock:           opts.Clock,
+		localPTYFactory: opts.LocalPTYFactory,
 	}
 
 	if cs.clock == nil {
@@ -88,7 +93,12 @@ func (cs *ControlSession) initializeLocal() error {
 	opts := localpty.DefaultOptions()
 	opts.NoRC = true // Don't source rc files for control session
 
-	pty, err := localpty.NewLocalPTY(opts)
+	factory := cs.localPTYFactory
+	if factory == nil {
+		factory = defaultLocalPTYFactory
+	}
+
+	pty, _, err := factory(opts)
 	if err != nil {
 		return fmt.Errorf("create local pty: %w", err)
 	}

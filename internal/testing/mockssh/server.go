@@ -33,9 +33,10 @@ type Server struct {
 }
 
 type session struct {
-	channel ssh.Channel
-	pty     *os.File
-	cmd     *exec.Cmd
+	channel  ssh.Channel
+	pty      *os.File
+	cmd      *exec.Cmd
+	ptyReady chan struct{} // closed when pty is assigned
 }
 
 // Option configures the mock SSH server.
@@ -220,22 +221,35 @@ func (s *Server) handlePtyReq(req *ssh.Request) *ptyRequest {
 }
 
 // handleShellReq processes a shell request.
-func (s *Server) handleShellReq(req *ssh.Request, sess *session, ptyReq *ptyRequest) {
+// Runs the shell in a goroutine so the request loop stays responsive
+// for subsequent requests like window-change.
+func (s *Server) handleShellReq(req *ssh.Request, sess *session, ptyReq *ptyRequest, done chan struct{}) {
 	replyIfWanted(req, true)
 	if ptyReq != nil {
-		s.handleShell(sess, ptyReq)
+		go func() {
+			defer close(done)
+			s.handleShell(sess, ptyReq)
+		}()
+	} else {
+		close(done)
 	}
 }
 
 // handleExecReq processes an exec request.
-func (s *Server) handleExecReq(req *ssh.Request, sess *session, ptyReq *ptyRequest) {
+// Runs the command in a goroutine so the request loop stays responsive.
+func (s *Server) handleExecReq(req *ssh.Request, sess *session, ptyReq *ptyRequest, done chan struct{}) {
 	cmd := parseExecRequest(req.Payload)
 	replyIfWanted(req, true)
-	s.handleExec(sess, cmd, ptyReq)
+	go func() {
+		defer close(done)
+		s.handleExec(sess, cmd, ptyReq)
+	}()
 }
 
 // handleWindowChangeReq processes a window-change request.
+// Waits for the PTY to be ready since the shell may be starting in a goroutine.
 func handleWindowChangeReq(req *ssh.Request, sess *session) {
+	<-sess.ptyReady
 	if sess.pty != nil {
 		winReq := parseWindowChangeRequest(req.Payload)
 		setWinsize(sess.pty, winReq.Width, winReq.Height)
@@ -247,26 +261,37 @@ func (s *Server) handleChannel(channel ssh.Channel, requests <-chan *ssh.Request
 	defer s.wg.Done()
 	defer channel.Close()
 
-	sess := &session{channel: channel}
+	sess := &session{channel: channel, ptyReady: make(chan struct{})}
 	s.sessionsMu.Lock()
 	s.sessions = append(s.sessions, sess)
 	s.sessionsMu.Unlock()
 
 	var ptyReq *ptyRequest
+	// done is closed when the shell/exec command finishes.
+	// We wait on it after the request loop so the channel isn't closed prematurely.
+	done := make(chan struct{})
+	commandStarted := false
 
 	for req := range requests {
 		switch req.Type {
 		case "pty-req":
 			ptyReq = s.handlePtyReq(req)
 		case "shell":
-			s.handleShellReq(req, sess, ptyReq)
+			commandStarted = true
+			s.handleShellReq(req, sess, ptyReq, done)
 		case "exec":
-			s.handleExecReq(req, sess, ptyReq)
+			commandStarted = true
+			s.handleExecReq(req, sess, ptyReq, done)
 		case "window-change":
 			handleWindowChangeReq(req, sess)
 		default:
 			replyIfWanted(req, false)
 		}
+	}
+
+	// Wait for the shell/exec goroutine to finish before closing the channel.
+	if commandStarted {
+		<-done
 	}
 }
 
@@ -299,6 +324,7 @@ func (s *Server) runWithPTY(sess *session, cmd *exec.Cmd, ptyReq *ptyRequest) {
 	}
 	sess.pty = ptmx
 	sess.cmd = cmd
+	close(sess.ptyReady)
 
 	setWinsize(ptmx, ptyReq.Width, ptyReq.Height)
 
@@ -312,8 +338,11 @@ func (s *Server) runWithPTY(sess *session, cmd *exec.Cmd, ptyReq *ptyRequest) {
 	}()
 
 	exitCode := extractExitCode(cmd.Wait())
-	ptmx.Close()
+	// Wait for io.Copy to finish reading all PTY output before closing.
+	// When the process exits, the slave PTY closes, causing the master to
+	// return EIO/EOF, which terminates io.Copy naturally.
 	<-done
+	ptmx.Close()
 	sendExitStatus(sess.channel, exitCode)
 }
 

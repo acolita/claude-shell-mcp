@@ -1089,8 +1089,14 @@ func TestMockSSH_WindowChange(t *testing.T) {
 		t.Fatalf("Shell() error = %v", err)
 	}
 
-	// Wait for shell prompt to appear (read some initial output)
-	readUntil(stdout, "$", 3*time.Second)
+	// Wait for shell to be ready by sending a known command and waiting for its output.
+	// Using "$" as prompt marker fails in Docker (root prompt is "#"), and readUntil
+	// leaks goroutines on timeout that steal data from subsequent reads.
+	readyMarker := "SHELL_READY_12345"
+	fmt.Fprintf(stdin, "echo %s\n", readyMarker)
+	if _, err := readUntil(stdout, readyMarker, 3*time.Second); err != nil {
+		t.Fatalf("shell not ready: %v", err)
+	}
 
 	// Send window-change request (resize to 50 rows, 160 cols)
 	err = session.WindowChange(50, 160)

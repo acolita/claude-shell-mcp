@@ -117,6 +117,7 @@ func TestManager_Create_LocalSessionSuccess(t *testing.T) {
 		WithManagerClock(clock),
 		WithManagerRandom(rand),
 		WithManagerStore(NewSessionStore(WithFileSystem(fs), WithStorePath("/tmp/create-test.json"))),
+		WithLocalPTYFactory(fakePTYFactory),
 	)
 
 	sess, err := mgr.Create(CreateOptions{Mode: "local"})
@@ -188,6 +189,7 @@ func TestManager_Create_SessionIDUnique(t *testing.T) {
 		WithManagerClock(clock),
 		WithManagerRandom(rand),
 		WithManagerStore(NewSessionStore(WithFileSystem(fs), WithStorePath("/tmp/unique-test.json"))),
+		WithLocalPTYFactory(fakePTYFactory),
 	)
 
 	sess1, err := mgr.Create(CreateOptions{Mode: "local"})
@@ -220,6 +222,7 @@ func TestManager_Create_SessionGettableAfterCreate(t *testing.T) {
 		WithManagerClock(clock),
 		WithManagerRandom(rand),
 		WithManagerStore(NewSessionStore(WithFileSystem(fs), WithStorePath("/tmp/gettable-test.json"))),
+		WithLocalPTYFactory(fakePTYFactory),
 	)
 
 	sess, err := mgr.Create(CreateOptions{Mode: "local"})
@@ -298,6 +301,7 @@ func TestManager_Recover_LocalSessionFromStore(t *testing.T) {
 		WithManagerClock(clock),
 		WithManagerRandom(rand),
 		WithManagerStore(store),
+		WithLocalPTYFactory(fakePTYFactory),
 	)
 
 	// Store metadata for a session that's not in memory
@@ -383,6 +387,7 @@ func TestManager_Recover_DoubleCheckInMemory(t *testing.T) {
 	mgr := NewManager(cfg,
 		WithManagerClock(clock),
 		WithManagerStore(store),
+		WithLocalPTYFactory(fakePTYFactory),
 	)
 
 	// Put metadata in store
@@ -429,6 +434,7 @@ func TestManager_Get_TriggersRecoverFromStore(t *testing.T) {
 		WithManagerClock(clock),
 		WithManagerRandom(rand),
 		WithManagerStore(store),
+		WithLocalPTYFactory(fakePTYFactory),
 	)
 
 	// Store metadata for a local session (not in memory)
@@ -633,6 +639,7 @@ func TestManager_GetControlSession_CreatesForLocal(t *testing.T) {
 	mgr := NewManager(cfg,
 		WithManagerClock(clock),
 		WithManagerStore(NewSessionStore(WithFileSystem(fs), WithStorePath("/tmp/ctrl-test.json"))),
+		WithLocalPTYFactory(fakePTYFactory),
 	)
 
 	opts := CreateOptions{Mode: "local"}
@@ -665,6 +672,7 @@ func TestManager_GetControlSession_EmptyHostTreatedAsLocal(t *testing.T) {
 	mgr := NewManager(cfg,
 		WithManagerClock(clock),
 		WithManagerStore(NewSessionStore(WithFileSystem(fs), WithStorePath("/tmp/ctrl-empty.json"))),
+		WithLocalPTYFactory(fakePTYFactory),
 	)
 
 	opts := CreateOptions{Mode: "local", Host: ""}
@@ -820,6 +828,7 @@ func TestManager_SessionCount_AfterCreateAndClose(t *testing.T) {
 		WithManagerClock(clock),
 		WithManagerRandom(rand),
 		WithManagerStore(NewSessionStore(WithFileSystem(fs), WithStorePath("/tmp/count-test.json"))),
+		WithLocalPTYFactory(fakePTYFactory),
 	)
 
 	if mgr.SessionCount() != 0 {
@@ -991,6 +1000,7 @@ func TestManager_Create_LocalSessionGetsControlSession(t *testing.T) {
 		WithManagerClock(clock),
 		WithManagerRandom(rand),
 		WithManagerStore(NewSessionStore(WithFileSystem(fs), WithStorePath("/tmp/ctrl-create.json"))),
+		WithLocalPTYFactory(fakePTYFactory),
 	)
 
 	sess, err := mgr.Create(CreateOptions{Mode: "local"})
@@ -1075,6 +1085,7 @@ func TestManager_Create_InheritsClockAndRandom(t *testing.T) {
 		WithManagerClock(clock),
 		WithManagerRandom(rand),
 		WithManagerStore(NewSessionStore(WithFileSystem(fs), WithStorePath("/tmp/inherit-test.json"))),
+		WithLocalPTYFactory(fakePTYFactory),
 	)
 
 	sess, err := mgr.Create(CreateOptions{Mode: "local"})
@@ -1105,6 +1116,7 @@ func TestManager_Create_SessionHasConfig(t *testing.T) {
 		WithManagerClock(clock),
 		WithManagerRandom(rand),
 		WithManagerStore(NewSessionStore(WithFileSystem(fs), WithStorePath("/tmp/config-test.json"))),
+		WithLocalPTYFactory(fakePTYFactory),
 	)
 
 	sess, err := mgr.Create(CreateOptions{Mode: "local"})
@@ -1174,6 +1186,7 @@ func TestManager_Recover_PreservesTunnelConfigs(t *testing.T) {
 		WithManagerClock(clock),
 		WithManagerRandom(rand),
 		WithManagerStore(store),
+		WithLocalPTYFactory(fakePTYFactory),
 	)
 
 	tunnels := []TunnelConfig{
@@ -1227,6 +1240,7 @@ func TestManager_Recover_UpdatesStore(t *testing.T) {
 		WithManagerClock(clock),
 		WithManagerRandom(rand),
 		WithManagerStore(store),
+		WithLocalPTYFactory(fakePTYFactory),
 	)
 
 	meta := SessionMetadata{
@@ -1273,6 +1287,7 @@ func TestManager_Recover_PreservesSSHMetadataFields(t *testing.T) {
 		WithManagerClock(clock),
 		WithManagerRandom(rand),
 		WithManagerStore(store),
+		WithLocalPTYFactory(fakePTYFactory),
 	)
 
 	// Store local session metadata but with SSH-like fields for testing field preservation
