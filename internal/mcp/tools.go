@@ -348,10 +348,7 @@ func (s *Server) validateSSHParams(host, user string) *mcp.CallToolResult {
 }
 
 func (s *Server) handleShellSessionCreate(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	mode := mcp.ParseString(req, "mode", s.config.Mode)
-	if mode == "" {
-		mode = "local"
-	}
+	mode := mcp.ParseString(req, "mode", "local")
 
 	host := mcp.ParseString(req, "host", "")
 	port := mcp.ParseInt(req, "port", 22)

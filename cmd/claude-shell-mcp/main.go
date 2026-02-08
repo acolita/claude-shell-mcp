@@ -16,7 +16,7 @@ import (
 
 // Version information - set at build time.
 var (
-	Version   = "1.5.5"
+	Version   = "1.6.0"
 	BuildTime = "unknown"
 	GitCommit = "unknown"
 )
@@ -24,13 +24,11 @@ var (
 func main() {
 	var (
 		configPath  string
-		mode        string
 		showVersion bool
 		debug       bool
 	)
 
 	flag.StringVar(&configPath, "config", "", "Path to configuration file")
-	flag.StringVar(&mode, "mode", "", "Run mode: 'local' or 'ssh' (overrides config)")
 	flag.BoolVar(&showVersion, "version", false, "Show version information")
 	flag.BoolVar(&debug, "debug", false, "Enable debug mode with verbose PTY logging")
 	flag.Parse()
@@ -49,11 +47,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Override mode from command line if provided
-	if mode != "" {
-		cfg.Mode = mode
-	}
-
 	// Enable debug mode if flag is set
 	if debug {
 		cfg.Logging.Level = "debug"
@@ -70,7 +63,6 @@ func main() {
 
 	slog.Info("starting claude-shell-mcp",
 		slog.String("version", Version),
-		slog.String("mode", cfg.Mode),
 	)
 
 	// Create MCP server
@@ -82,9 +74,6 @@ func main() {
 		var watcherErr error
 		configWatcher, watcherErr = config.NewWatcher(configPath, func(newCfg *config.Config) {
 			// Apply command line overrides to new config
-			if mode != "" {
-				newCfg.Mode = mode
-			}
 			if debug {
 				newCfg.Logging.Level = "debug"
 			}

@@ -12,9 +12,6 @@ import (
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 
-	if cfg.Mode != "local" {
-		t.Errorf("Mode = %q, want %q", cfg.Mode, "local")
-	}
 	if cfg.Security.SudoCacheTTL != 5*time.Minute {
 		t.Errorf("SudoCacheTTL = %v, want %v", cfg.Security.SudoCacheTTL, 5*time.Minute)
 	}
@@ -36,12 +33,9 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestLoadEmptyPath(t *testing.T) {
-	cfg, err := Load("")
+	_, err := Load("")
 	if err != nil {
 		t.Fatalf("Load(\"\") error: %v", err)
-	}
-	if cfg.Mode != "local" {
-		t.Errorf("Mode = %q, want %q (default)", cfg.Mode, "local")
 	}
 }
 
@@ -120,11 +114,6 @@ prompt_detection:
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
-	}
-
-	// Mode
-	if cfg.Mode != "ssh" {
-		t.Errorf("Mode = %q, want %q", cfg.Mode, "ssh")
 	}
 
 	// Servers
@@ -246,41 +235,12 @@ servers:
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	// Overridden values
-	if cfg.Mode != "ssh" {
-		t.Errorf("Mode = %q, want %q", cfg.Mode, "ssh")
-	}
-
 	// Defaults preserved for unset fields
 	if cfg.Security.SudoCacheTTL != 5*time.Minute {
 		t.Errorf("SudoCacheTTL = %v, want default %v", cfg.Security.SudoCacheTTL, 5*time.Minute)
 	}
 	if cfg.Security.MaxSessionsPerUser != 10 {
 		t.Errorf("MaxSessionsPerUser = %d, want default 10", cfg.Security.MaxSessionsPerUser)
-	}
-}
-
-func TestValidate(t *testing.T) {
-	tests := []struct {
-		name    string
-		mode    string
-		wantErr bool
-	}{
-		{"local mode", "local", false},
-		{"ssh mode", "ssh", false},
-		{"empty mode", "", false},
-		{"invalid mode", "telnet", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := DefaultConfig()
-			cfg.Mode = tt.mode
-			err := cfg.Validate()
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
 	}
 }
 
@@ -322,7 +282,7 @@ func writeConfigFile(t *testing.T, path, content string) {
 func TestNewWatcher(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.yaml")
-	writeConfigFile(t, path, "mode: local\n")
+	writeConfigFile(t, path, "logging:\n  level: info\n")
 
 	w, err := NewWatcher(path, nil)
 	if err != nil {
@@ -331,8 +291,8 @@ func TestNewWatcher(t *testing.T) {
 	defer w.Close()
 
 	cfg := w.Config()
-	if cfg.Mode != "local" {
-		t.Errorf("Config().Mode = %q, want %q", cfg.Mode, "local")
+	if cfg.Logging.Level != "info" {
+		t.Errorf("Config().Logging.Level = %q, want %q", cfg.Logging.Level, "info")
 	}
 }
 
@@ -346,7 +306,7 @@ func TestNewWatcherMissingFile(t *testing.T) {
 func TestWatcherReloadsOnFileChange(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.yaml")
-	writeConfigFile(t, path, "mode: local\n")
+	writeConfigFile(t, path, "logging:\n  level: info\n")
 
 	var mu sync.Mutex
 	var changed *Config
@@ -362,7 +322,7 @@ func TestWatcherReloadsOnFileChange(t *testing.T) {
 	defer w.Close()
 
 	// Modify the config file
-	writeConfigFile(t, path, "mode: ssh\n")
+	writeConfigFile(t, path, "logging:\n  level: debug\n")
 
 	// Wait for the watcher to pick up the change
 	deadline := time.Now().Add(2 * time.Second)
@@ -370,7 +330,7 @@ func TestWatcherReloadsOnFileChange(t *testing.T) {
 		mu.Lock()
 		c := changed
 		mu.Unlock()
-		if c != nil && c.Mode == "ssh" {
+		if c != nil && c.Logging.Level == "debug" {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -378,15 +338,15 @@ func TestWatcherReloadsOnFileChange(t *testing.T) {
 
 	// Verify the config was reloaded
 	cfg := w.Config()
-	if cfg.Mode != "ssh" {
-		t.Errorf("Config().Mode = %q after reload, want %q", cfg.Mode, "ssh")
+	if cfg.Logging.Level != "debug" {
+		t.Errorf("Config().Logging.Level = %q after reload, want %q", cfg.Logging.Level, "debug")
 	}
 
 	mu.Lock()
 	if changed == nil {
 		t.Error("onChange callback was never called")
-	} else if changed.Mode != "ssh" {
-		t.Errorf("onChange received Mode = %q, want %q", changed.Mode, "ssh")
+	} else if changed.Logging.Level != "debug" {
+		t.Errorf("onChange received Logging.Level = %q, want %q", changed.Logging.Level, "debug")
 	}
 	mu.Unlock()
 }
@@ -394,7 +354,7 @@ func TestWatcherReloadsOnFileChange(t *testing.T) {
 func TestWatcherReloadInvalidConfig(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.yaml")
-	writeConfigFile(t, path, "mode: local\n")
+	writeConfigFile(t, path, "logging:\n  level: info\n")
 
 	var counting atomic.Bool
 	var callCount atomic.Int32
@@ -420,8 +380,8 @@ func TestWatcherReloadInvalidConfig(t *testing.T) {
 
 	// Original config should be preserved
 	cfg := w.Config()
-	if cfg.Mode != "local" {
-		t.Errorf("Config().Mode = %q, want %q (preserved after bad reload)", cfg.Mode, "local")
+	if cfg.Logging.Level != "info" {
+		t.Errorf("Config().Logging.Level = %q, want %q (preserved after bad reload)", cfg.Logging.Level, "info")
 	}
 
 	if c := callCount.Load(); c > 0 {
@@ -429,46 +389,10 @@ func TestWatcherReloadInvalidConfig(t *testing.T) {
 	}
 }
 
-func TestWatcherReloadInvalidMode(t *testing.T) {
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "config.yaml")
-	writeConfigFile(t, path, "mode: local\n")
-
-	var mu sync.Mutex
-	var lastMode string
-
-	w, err := NewWatcher(path, func(cfg *Config) {
-		mu.Lock()
-		lastMode = cfg.Mode
-		mu.Unlock()
-	})
-	if err != nil {
-		t.Fatalf("NewWatcher() error: %v", err)
-	}
-	defer w.Close()
-
-	// Write valid YAML but invalid mode - should fail validation
-	writeConfigFile(t, path, "mode: telnet\n")
-
-	time.Sleep(500 * time.Millisecond)
-
-	// Config should never be set to "telnet" (invalid mode fails validation)
-	cfg := w.Config()
-	if cfg.Mode == "telnet" {
-		t.Errorf("Config().Mode = %q, invalid mode should have been rejected by validation", cfg.Mode)
-	}
-
-	mu.Lock()
-	if lastMode == "telnet" {
-		t.Errorf("onChange received Mode = %q, invalid mode should not trigger onChange", lastMode)
-	}
-	mu.Unlock()
-}
-
 func TestWatcherClose(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.yaml")
-	writeConfigFile(t, path, "mode: local\n")
+	writeConfigFile(t, path, "logging:\n  level: info\n")
 
 	w, err := NewWatcher(path, nil)
 	if err != nil {

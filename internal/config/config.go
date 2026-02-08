@@ -18,7 +18,6 @@ type Config struct {
 	Recording       RecordingConfig `yaml:"recording"`
 	Shell           ShellConfig     `yaml:"shell"`
 	PromptDetection PromptConfig    `yaml:"prompt_detection"`
-	Mode            string          `yaml:"mode"` // "ssh" or "local"
 }
 
 // ServerConfig defines an SSH server connection.
@@ -86,7 +85,6 @@ type PatternConfig struct {
 // DefaultConfig returns the default configuration.
 func DefaultConfig() *Config {
 	return &Config{
-		Mode: "local",
 		Security: SecurityConfig{
 			SudoCacheTTL:       5 * time.Minute,
 			IdleTimeout:        30 * time.Minute,
@@ -131,10 +129,6 @@ func Load(path string, fsys ...ports.FileSystem) (*Config, error) {
 
 // Validate validates the configuration.
 func (c *Config) Validate() error {
-	if c.Mode != "local" && c.Mode != "ssh" && c.Mode != "" {
-		return fmt.Errorf("invalid mode: %s (must be 'local' or 'ssh')", c.Mode)
-	}
-
 	if c.Security.MaxSessionsPerUser <= 0 {
 		c.Security.MaxSessionsPerUser = 10
 	}
