@@ -7,8 +7,11 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"time"
 
+	"github.com/acolita/claude-shell-mcp/internal/config"
 	"github.com/acolita/claude-shell-mcp/internal/session"
+	"github.com/acolita/claude-shell-mcp/internal/ssh"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -34,6 +37,7 @@ func (s *Server) registerTools() {
 	s.mcpServer.AddTool(shellSessionCloseTool(), s.handleShellSessionClose)
 	s.mcpServer.AddTool(shellSudoAuthTool(), s.handleShellSudoAuth)
 	s.mcpServer.AddTool(shellServerListTool(), s.handleShellServerList)
+	s.mcpServer.AddTool(shellServerTestTool(), s.handleShellServerTest)
 
 	// Register file transfer tools
 	s.registerFileTransferTools()
@@ -114,6 +118,29 @@ Each server includes:
 - has_sudo_password: Whether sudo password is configured (never reveals the password)
 
 Returns an empty list if no config file is loaded or no servers are defined.`),
+	)
+}
+
+func shellServerTestTool() mcp.Tool {
+	return mcp.NewTool("shell_server_test",
+		mcp.WithDescription(`Test SSH connectivity to a configured server without creating a session.
+
+Performs an SSH handshake and authentication against a configured server,
+then immediately disconnects. Use this to verify a server is reachable
+before creating a persistent session.
+
+Returns:
+- reachable: Whether the server accepted the SSH connection and authentication
+- latency_ms: Round-trip time for the SSH handshake in milliseconds
+- error: Error message if the connection failed
+- server: The server's connection details (name, host, port, user)`),
+		mcp.WithString("name",
+			mcp.Required(),
+			mcp.Description("Server name from config (as shown by shell_server_list)"),
+		),
+		mcp.WithNumber("timeout_ms",
+			mcp.Description("Connection timeout in milliseconds (default: 10000)"),
+		),
 	)
 }
 
@@ -424,11 +451,23 @@ func (s *Server) handleShellSessionList(ctx context.Context, req mcp.CallToolReq
 func (s *Server) handleShellServerList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	servers := make([]map[string]any, 0)
 
+	// Build host → session IDs map from active sessions
+	hostSessions := make(map[string][]string)
+	for _, info := range s.sessionManager.ListDetailed() {
+		if info.Host != "" && info.Host != "local" {
+			hostSessions[info.Host] = append(hostSessions[info.Host], info.ID)
+		}
+	}
+
 	if s.config != nil {
 		for _, srv := range s.config.Servers {
 			port := srv.Port
 			if port == 0 {
 				port = 22
+			}
+			sessionIDs := hostSessions[srv.Host]
+			if sessionIDs == nil {
+				sessionIDs = []string{}
 			}
 			entry := map[string]any{
 				"name":              srv.Name,
@@ -437,6 +476,8 @@ func (s *Server) handleShellServerList(ctx context.Context, req mcp.CallToolRequ
 				"user":              srv.User,
 				"key_path":          srv.KeyPath,
 				"has_sudo_password": srv.SudoPasswordEnv != "",
+				"active_sessions":   len(sessionIDs),
+				"session_ids":       sessionIDs,
 			}
 			servers = append(servers, entry)
 		}
@@ -445,6 +486,103 @@ func (s *Server) handleShellServerList(ctx context.Context, req mcp.CallToolRequ
 	result := map[string]any{
 		"count":   len(servers),
 		"servers": servers,
+	}
+	return jsonResult(result)
+}
+
+func (s *Server) handleShellServerTest(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	name := mcp.ParseString(req, "name", "")
+	if name == "" {
+		return mcp.NewToolResultError("name is required"), nil
+	}
+
+	timeoutMs := mcp.ParseInt(req, "timeout_ms", 10000)
+
+	srv := s.lookupServer(name)
+	if srv == nil {
+		return mcp.NewToolResultError(fmt.Sprintf("server %q not found in config", name)), nil
+	}
+
+	port := srv.Port
+	if port == 0 {
+		port = 22
+	}
+
+	serverInfo := map[string]any{
+		"name": srv.Name,
+		"host": srv.Host,
+		"port": port,
+		"user": srv.User,
+	}
+
+	// Build auth methods
+	authCfg := ssh.AuthConfig{
+		UseAgent: true,
+		KeyPath:  srv.KeyPath,
+		Host:     srv.Host,
+	}
+	if srv.Auth.Type == "password" && srv.Auth.PasswordEnv != "" {
+		authCfg.Password = s.fs.Getenv(srv.Auth.PasswordEnv)
+	}
+	if srv.Auth.PassphraseEnv != "" {
+		authCfg.KeyPassphrase = s.fs.Getenv(srv.Auth.PassphraseEnv)
+	}
+	if srv.Auth.Path != "" {
+		authCfg.KeyPath = srv.Auth.Path
+	}
+
+	authMethods, err := ssh.BuildAuthMethods(authCfg)
+	if err != nil {
+		result := map[string]any{
+			"reachable": false,
+			"error":     fmt.Sprintf("build auth methods: %v", err),
+			"server":    serverInfo,
+		}
+		return jsonResult(result)
+	}
+
+	hostKeyCallback, err := ssh.BuildHostKeyCallback("")
+	if err != nil {
+		hostKeyCallback = ssh.InsecureHostKeyCallback()
+	}
+
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+	client, err := ssh.NewClient(ssh.ClientOptions{
+		Host:            srv.Host,
+		Port:            port,
+		User:            srv.User,
+		AuthMethods:     authMethods,
+		HostKeyCallback: hostKeyCallback,
+		Timeout:         timeout,
+	})
+	if err != nil {
+		result := map[string]any{
+			"reachable": false,
+			"error":     fmt.Sprintf("create client: %v", err),
+			"server":    serverInfo,
+		}
+		return jsonResult(result)
+	}
+
+	start := time.Now()
+	err = client.Connect()
+	latency := time.Since(start)
+	client.Close()
+
+	if err != nil {
+		result := map[string]any{
+			"reachable":  false,
+			"latency_ms": latency.Milliseconds(),
+			"error":      err.Error(),
+			"server":     serverInfo,
+		}
+		return jsonResult(result)
+	}
+
+	result := map[string]any{
+		"reachable":  true,
+		"latency_ms": latency.Milliseconds(),
+		"server":     serverInfo,
 	}
 	return jsonResult(result)
 }
@@ -486,31 +624,34 @@ func (s *Server) tryCachedSudoInjection(sessionID string, sess *session.Session,
 	return newResult, nil
 }
 
-// lookupSudoPasswordFromConfig reads the sudo password from a server's configured env var.
-func (s *Server) lookupSudoPasswordFromConfig(host string) []byte {
-	if s.config == nil || host == "" {
+// lookupServer finds a configured server by name or host.
+func (s *Server) lookupServer(name string) *config.ServerConfig {
+	if s.config == nil || name == "" {
 		return nil
 	}
-
-	for _, srv := range s.config.Servers {
-		if srv.Host != host && srv.Name != host {
-			continue
+	for i, srv := range s.config.Servers {
+		if srv.Name == name || srv.Host == name {
+			return &s.config.Servers[i]
 		}
-		if srv.SudoPasswordEnv == "" {
-			return nil
-		}
-		pwd := s.fs.Getenv(srv.SudoPasswordEnv)
-		if pwd == "" {
-			slog.Warn("sudo_password_env configured but env var is empty",
-				slog.String("server", srv.Name),
-				slog.String("env_var", srv.SudoPasswordEnv),
-			)
-			return nil
-		}
-		return []byte(pwd)
 	}
-
 	return nil
+}
+
+// lookupSudoPasswordFromConfig reads the sudo password from a server's configured env var.
+func (s *Server) lookupSudoPasswordFromConfig(host string) []byte {
+	srv := s.lookupServer(host)
+	if srv == nil || srv.SudoPasswordEnv == "" {
+		return nil
+	}
+	pwd := s.fs.Getenv(srv.SudoPasswordEnv)
+	if pwd == "" {
+		slog.Warn("sudo_password_env configured but env var is empty",
+			slog.String("server", srv.Name),
+			slog.String("env_var", srv.SudoPasswordEnv),
+		)
+		return nil
+	}
+	return []byte(pwd)
 }
 
 // applyAutoTruncation saves large outputs to a file and clears stdout.
