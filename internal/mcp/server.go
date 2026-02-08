@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/acolita/claude-shell-mcp/internal/adapters/realclock"
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realdialog"
 	"github.com/acolita/claude-shell-mcp/internal/adapters/realfs"
 	"github.com/acolita/claude-shell-mcp/internal/config"
 	"github.com/acolita/claude-shell-mcp/internal/ports"
@@ -23,6 +24,8 @@ type Server struct {
 	authRateLimiter  *security.AuthRateLimiter
 	recordingManager *recording.Manager
 	config           *config.Config
+	configPath       string
+	dialogProvider   ports.DialogProvider
 	fs               ports.FileSystem
 	clock            ports.Clock
 }
@@ -48,6 +51,20 @@ func WithClock(clock ports.Clock) ServerOption {
 func WithSessionManager(sm sessionManager) ServerOption {
 	return func(s *Server) {
 		s.sessionManager = sm
+	}
+}
+
+// WithConfigPath sets the path to the config file (enables config management tools).
+func WithConfigPath(path string) ServerOption {
+	return func(s *Server) {
+		s.configPath = path
+	}
+}
+
+// WithDialogProvider sets the dialog provider used for interactive user prompts.
+func WithDialogProvider(dp ports.DialogProvider) ServerOption {
+	return func(s *Server) {
+		s.dialogProvider = dp
 	}
 }
 
@@ -102,6 +119,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) *Server {
 		authRateLimiter:  security.NewAuthRateLimiter(maxAuthFailures, authLockoutDuration),
 		recordingManager: recording.NewManager(recordingPath, cfg.Recording.Enabled),
 		config:           cfg,
+		dialogProvider:   realdialog.New(),
 		fs:               realfs.New(),
 		clock:            realclock.New(),
 	}

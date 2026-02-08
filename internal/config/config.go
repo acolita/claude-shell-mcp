@@ -4,11 +4,26 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/acolita/claude-shell-mcp/internal/ports"
 	"gopkg.in/yaml.v3"
 )
+
+// DefaultConfigPath returns the default config file path:
+// $XDG_CONFIG_HOME/claude-shell-mcp/config.yaml or ~/.config/claude-shell-mcp/config.yaml
+func DefaultConfigPath() string {
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		dir = filepath.Join(home, ".config")
+	}
+	return filepath.Join(dir, "claude-shell-mcp", "config.yaml")
+}
 
 // Config represents the top-level configuration.
 type Config struct {
@@ -117,6 +132,10 @@ func Load(path string, fsys ...ports.FileSystem) (*Config, error) {
 		data, err = os.ReadFile(path)
 	}
 	if err != nil {
+		if os.IsNotExist(err) {
+			// File doesn't exist yet — return defaults (config_add will create it)
+			return cfg, nil
+		}
 		return nil, fmt.Errorf("read config file: %w", err)
 	}
 
@@ -134,4 +153,33 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// AddServer adds a server to the configuration.
+// Returns an error if a server with the same name already exists.
+func (c *Config) AddServer(server ServerConfig) error {
+	for _, s := range c.Servers {
+		if s.Name == server.Name {
+			return fmt.Errorf("server %q already exists", server.Name)
+		}
+	}
+	c.Servers = append(c.Servers, server)
+	return nil
+}
+
+// Save writes the configuration to a YAML file.
+// An optional FileSystem can be passed for testing; if omitted, the real OS is used.
+func Save(cfg *Config, path string, fsys ...ports.FileSystem) error {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+
+	if len(fsys) > 0 && fsys[0] != nil {
+		return fsys[0].WriteFile(path, data, 0644)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	return os.WriteFile(path, data, 0644)
 }

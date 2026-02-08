@@ -40,9 +40,13 @@ func TestLoadEmptyPath(t *testing.T) {
 }
 
 func TestLoadMissingFile(t *testing.T) {
-	_, err := Load("/nonexistent/path/config.yaml")
-	if err == nil {
-		t.Fatal("Load(nonexistent) expected error, got nil")
+	// Missing file returns defaults (allows config_add to create it later)
+	cfg, err := Load("/nonexistent/path/config.yaml")
+	if err != nil {
+		t.Fatalf("Load(nonexistent) error: %v", err)
+	}
+	if cfg.Logging.Level != "info" {
+		t.Errorf("Logging.Level = %q, want default %q", cfg.Logging.Level, "info")
 	}
 }
 
@@ -386,6 +390,64 @@ func TestWatcherReloadInvalidConfig(t *testing.T) {
 
 	if c := callCount.Load(); c > 0 {
 		t.Errorf("onChange was called %d times, want 0 (invalid config should not trigger)", c)
+	}
+}
+
+func TestAddServer(t *testing.T) {
+	cfg := DefaultConfig()
+
+	err := cfg.AddServer(ServerConfig{Name: "prod", Host: "10.0.0.1", Port: 22, User: "deploy"})
+	if err != nil {
+		t.Fatalf("AddServer() error: %v", err)
+	}
+	if len(cfg.Servers) != 1 {
+		t.Fatalf("len(Servers) = %d, want 1", len(cfg.Servers))
+	}
+	if cfg.Servers[0].Name != "prod" {
+		t.Errorf("Servers[0].Name = %q, want %q", cfg.Servers[0].Name, "prod")
+	}
+
+	// Duplicate should error
+	err = cfg.AddServer(ServerConfig{Name: "prod", Host: "10.0.0.2"})
+	if err == nil {
+		t.Fatal("AddServer(duplicate) expected error, got nil")
+	}
+
+	// Different name should work
+	err = cfg.AddServer(ServerConfig{Name: "staging", Host: "10.0.0.2"})
+	if err != nil {
+		t.Fatalf("AddServer(staging) error: %v", err)
+	}
+	if len(cfg.Servers) != 2 {
+		t.Fatalf("len(Servers) = %d, want 2", len(cfg.Servers))
+	}
+}
+
+func TestSaveAndReload(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Servers = []ServerConfig{
+		{Name: "prod", Host: "10.0.0.1", Port: 22, User: "deploy"},
+	}
+
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "saved.yaml")
+
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() after Save() error: %v", err)
+	}
+	if len(loaded.Servers) != 1 {
+		t.Fatalf("len(Servers) = %d, want 1", len(loaded.Servers))
+	}
+	if loaded.Servers[0].Name != "prod" {
+		t.Errorf("Servers[0].Name = %q, want %q", loaded.Servers[0].Name, "prod")
+	}
+	if loaded.Servers[0].Host != "10.0.0.1" {
+		t.Errorf("Servers[0].Host = %q, want %q", loaded.Servers[0].Host, "10.0.0.1")
 	}
 }
 

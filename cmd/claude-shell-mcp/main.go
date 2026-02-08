@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/acolita/claude-shell-mcp/internal/adapters/realdialog"
 	"github.com/acolita/claude-shell-mcp/internal/config"
 	"github.com/acolita/claude-shell-mcp/internal/logging"
 	"github.com/acolita/claude-shell-mcp/internal/mcp"
@@ -16,7 +17,7 @@ import (
 
 // Version information - set at build time.
 var (
-	Version   = "1.7.0"
+	Version   = "1.8.0"
 	BuildTime = "unknown"
 	GitCommit = "unknown"
 )
@@ -26,12 +27,28 @@ func main() {
 		configPath  string
 		showVersion bool
 		debug       bool
+		formMode    bool
 	)
 
 	flag.StringVar(&configPath, "config", "", "Path to configuration file")
 	flag.BoolVar(&showVersion, "version", false, "Show version information")
 	flag.BoolVar(&debug, "debug", false, "Enable debug mode with verbose PTY logging")
+	flag.BoolVar(&formMode, "form", false, "Run as TUI form helper (internal use)")
 	flag.Parse()
+
+	// Form helper mode: show TUI form in its own terminal window, write result, exit.
+	// This is spawned by the MCP server's dialog provider.
+	if formMode {
+		if err := realdialog.RunFormHelper(); err != nil {
+			// Write error to done file so the MCP handler doesn't time out
+			if formFile := os.Getenv("CLAUDE_SHELL_FORM_FILE"); formFile != "" {
+				os.WriteFile(formFile+".done", []byte(err.Error()), 0600)
+			}
+			fmt.Fprintf(os.Stderr, "form error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 
 	if showVersion {
 		fmt.Printf("claude-shell-mcp version %s\n", Version)
@@ -40,7 +57,12 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Load configuration
+	// Use default config path if none specified
+	if configPath == "" {
+		configPath = config.DefaultConfigPath()
+	}
+
+	// Load configuration (creates default if file doesn't exist yet)
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
@@ -66,7 +88,7 @@ func main() {
 	)
 
 	// Create MCP server
-	server := mcp.NewServer(cfg)
+	server := mcp.NewServer(cfg, mcp.WithConfigPath(configPath))
 
 	// Set up config hot-reload if config file was provided
 	var configWatcher *config.Watcher

@@ -50,6 +50,9 @@ func (s *Server) registerTools() {
 	// Register peak-tty management tools
 	s.registerPeakTTYTools()
 
+	// Register config management tools
+	s.registerConfigTools()
+
 	// Register debug tool
 	s.mcpServer.AddTool(shellDebugTool(), s.handleShellDebug)
 }

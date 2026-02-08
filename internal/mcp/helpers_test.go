@@ -959,6 +959,9 @@ func TestHelperToolDefinitions(t *testing.T) {
 		{"peakTTYStartTool", peakTTYStartTool},
 		{"peakTTYStopTool", peakTTYStopTool},
 		{"peakTTYDeployTool", peakTTYDeployTool},
+		{"shellConfigAddTool", shellConfigAddTool},
+		{"shellServerListTool", shellServerListTool},
+		{"shellServerTestTool", shellServerTestTool},
 	}
 
 	for _, tt := range tools {
