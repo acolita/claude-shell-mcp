@@ -17,6 +17,7 @@ import (
 	"github.com/acolita/claude-shell-mcp/internal/testing/fakes/fakefs"
 	"github.com/acolita/claude-shell-mcp/internal/testing/fakes/fakepty"
 	"github.com/acolita/claude-shell-mcp/internal/testing/fakes/fakesessionmgr"
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
 
 // newTestServerWithFS creates a test server with a custom fakefs for file operations.
@@ -3368,5 +3369,130 @@ func TestBuildRelPath_EmptyParent(t *testing.T) {
 	got := buildRelPath("", "file.go")
 	if got != "file.go" {
 		t.Errorf("buildRelPath=%q, want 'file.go'", got)
+	}
+}
+
+// ==================== handleShellServerList ====================
+
+func TestHandleShellServerList_NoConfig(t *testing.T) {
+	sm := fakesessionmgr.New()
+	srv := newTestServer(sm)
+	srv.config = nil
+
+	result, err := srv.handleShellServerList(context.Background(), makeRequest(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(result.Content[0].(mcpgo.TextContent).Text), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if int(parsed["count"].(float64)) != 0 {
+		t.Errorf("count=%v, want 0", parsed["count"])
+	}
+	servers := parsed["servers"].([]any)
+	if len(servers) != 0 {
+		t.Errorf("servers length=%d, want 0", len(servers))
+	}
+}
+
+func TestHandleShellServerList_NoServers(t *testing.T) {
+	sm := fakesessionmgr.New()
+	cfg := config.DefaultConfig()
+	cfg.Servers = []config.ServerConfig{}
+	srv := newTestServerWithConfig(sm, fakefs.New(), cfg)
+
+	result, err := srv.handleShellServerList(context.Background(), makeRequest(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(result.Content[0].(mcpgo.TextContent).Text), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if int(parsed["count"].(float64)) != 0 {
+		t.Errorf("count=%v, want 0", parsed["count"])
+	}
+}
+
+func TestHandleShellServerList_WithServers(t *testing.T) {
+	sm := fakesessionmgr.New()
+	cfg := config.DefaultConfig()
+	cfg.Servers = []config.ServerConfig{
+		{Name: "s1", Host: "192.168.1.10", Port: 22, User: "admin", KeyPath: "~/.ssh/id_ed25519", SudoPasswordEnv: "S1_SUDO"},
+		{Name: "s2", Host: "10.0.0.5", Port: 2222, User: "deploy"},
+	}
+	srv := newTestServerWithConfig(sm, fakefs.New(), cfg)
+
+	result, err := srv.handleShellServerList(context.Background(), makeRequest(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(result.Content[0].(mcpgo.TextContent).Text), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if int(parsed["count"].(float64)) != 2 {
+		t.Errorf("count=%v, want 2", parsed["count"])
+	}
+
+	servers := parsed["servers"].([]any)
+	s1 := servers[0].(map[string]any)
+	if s1["name"] != "s1" {
+		t.Errorf("name=%v, want s1", s1["name"])
+	}
+	if s1["host"] != "192.168.1.10" {
+		t.Errorf("host=%v, want 192.168.1.10", s1["host"])
+	}
+	if int(s1["port"].(float64)) != 22 {
+		t.Errorf("port=%v, want 22", s1["port"])
+	}
+	if s1["user"] != "admin" {
+		t.Errorf("user=%v, want admin", s1["user"])
+	}
+	if s1["has_sudo_password"] != true {
+		t.Error("has_sudo_password should be true for s1")
+	}
+
+	s2 := servers[1].(map[string]any)
+	if s2["has_sudo_password"] != false {
+		t.Error("has_sudo_password should be false for s2")
+	}
+	if int(s2["port"].(float64)) != 2222 {
+		t.Errorf("port=%v, want 2222", s2["port"])
+	}
+
+	// Verify secrets are not leaked
+	text := result.Content[0].(mcpgo.TextContent).Text
+	if strings.Contains(text, "S1_SUDO") {
+		t.Error("sudo_password_env value should not be in output")
+	}
+}
+
+func TestHandleShellServerList_DefaultPort(t *testing.T) {
+	sm := fakesessionmgr.New()
+	cfg := config.DefaultConfig()
+	cfg.Servers = []config.ServerConfig{
+		{Name: "noport", Host: "example.com", User: "user"},
+	}
+	srv := newTestServerWithConfig(sm, fakefs.New(), cfg)
+
+	result, err := srv.handleShellServerList(context.Background(), makeRequest(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(result.Content[0].(mcpgo.TextContent).Text), &parsed); err != nil {
+		t.Fatal(err)
+	}
+
+	servers := parsed["servers"].([]any)
+	s := servers[0].(map[string]any)
+	if int(s["port"].(float64)) != 22 {
+		t.Errorf("port=%v, want 22 (default)", s["port"])
 	}
 }

@@ -33,6 +33,7 @@ func (s *Server) registerTools() {
 	s.mcpServer.AddTool(shellSessionStatusTool(), s.handleShellSessionStatus)
 	s.mcpServer.AddTool(shellSessionCloseTool(), s.handleShellSessionClose)
 	s.mcpServer.AddTool(shellSudoAuthTool(), s.handleShellSudoAuth)
+	s.mcpServer.AddTool(shellServerListTool(), s.handleShellServerList)
 
 	// Register file transfer tools
 	s.registerFileTransferTools()
@@ -94,6 +95,25 @@ Returns a list of all open sessions with their details including:
 - idle_for: How long the session has been idle
 
 Use this to recover session IDs after context compaction, or to find and close orphaned sessions.`),
+	)
+}
+
+func shellServerListTool() mcp.Tool {
+	return mcp.NewTool("shell_server_list",
+		mcp.WithDescription(`List configured SSH servers from the config file.
+
+Returns the list of pre-configured servers with their connection details.
+Use the server name with shell_session_create to connect quickly.
+
+Each server includes:
+- name: Short name for the server (e.g., "s1", "production")
+- host: SSH hostname or IP
+- port: SSH port
+- user: SSH username
+- key_path: Path to SSH key (if configured)
+- has_sudo_password: Whether sudo password is configured (never reveals the password)
+
+Returns an empty list if no config file is loaded or no servers are defined.`),
 	)
 }
 
@@ -401,6 +421,34 @@ func (s *Server) handleShellSessionList(ctx context.Context, req mcp.CallToolReq
 		"sessions": sessions,
 	}
 
+	return jsonResult(result)
+}
+
+func (s *Server) handleShellServerList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	servers := make([]map[string]any, 0)
+
+	if s.config != nil {
+		for _, srv := range s.config.Servers {
+			port := srv.Port
+			if port == 0 {
+				port = 22
+			}
+			entry := map[string]any{
+				"name":              srv.Name,
+				"host":              srv.Host,
+				"port":              port,
+				"user":              srv.User,
+				"key_path":          srv.KeyPath,
+				"has_sudo_password": srv.SudoPasswordEnv != "",
+			}
+			servers = append(servers, entry)
+		}
+	}
+
+	result := map[string]any{
+		"count":   len(servers),
+		"servers": servers,
+	}
 	return jsonResult(result)
 }
 
