@@ -1,11 +1,12 @@
 # Binaries
-claude-shell-mcp
+/claude-shell-mcp
 *.exe
 dist/
 
-# Test coverage
+# Test artifacts
 coverage.out
 coverage.html
+test-report.json
 
 # IDE
 .idea/

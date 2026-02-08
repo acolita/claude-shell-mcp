@@ -1,18 +1,19 @@
 package realdialog
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/acolita/claude-shell-mcp/internal/ports"
-	"github.com/charmbracelet/huh"
 )
 
 // RunFormHelper is the entry point for the --form helper subprocess.
 // It runs in its own terminal window, reads encrypted prefill from the temp file,
-// shows the TUI form, encrypts the result back, and writes a done marker.
+// shows the form via simple print/scan, encrypts the result back, and writes a done marker.
 func RunFormHelper() error {
 	formFile := os.Getenv(envFormFile)
 	formKey := os.Getenv(envFormKey)
@@ -75,72 +76,65 @@ func RunFormHelper() error {
 }
 
 func runForm(prefill ports.ServerFormData) (ports.ServerFormData, error) {
+	scanner := bufio.NewScanner(os.Stdin)
 	result := prefill
-	portStr := strconv.Itoa(prefill.Port)
-	if portStr == "0" {
-		portStr = "22"
+
+	if result.Port == 0 {
+		result.Port = 22
+	}
+	if result.AuthType == "" {
+		result.AuthType = "key"
 	}
 
-	var confirmed bool
+	fmt.Println("\n  Connection Details")
+	fmt.Println("  ─────────────────")
 
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("Server Name").
-				Description("Short name for this server (e.g., 'production', 's1')").
-				Value(&result.Name),
+	result.Name = prompt(scanner, "  Server Name", result.Name)
+	result.Host = prompt(scanner, "  Host", result.Host)
 
-			huh.NewInput().
-				Title("Host").
-				Description("SSH hostname or IP address").
-				Value(&result.Host),
-
-			huh.NewInput().
-				Title("Port").
-				Description("SSH port").
-				Value(&portStr),
-
-			huh.NewInput().
-				Title("User").
-				Description("SSH username").
-				Value(&result.User),
-		),
-		huh.NewGroup(
-			huh.NewInput().
-				Title("SSH Key Path").
-				Description("Path to SSH private key (leave empty for ssh-agent)").
-				Value(&result.KeyPath),
-
-			huh.NewSelect[string]().
-				Title("Auth Type").
-				Options(
-					huh.NewOption("Key-based", "key"),
-					huh.NewOption("Password-based", "password"),
-				).
-				Value(&result.AuthType),
-
-			huh.NewInput().
-				Title("Sudo Password Env Var").
-				Description("Environment variable containing sudo password (optional)").
-				Value(&result.SudoPasswordEnv),
-		),
-		huh.NewGroup(
-			huh.NewConfirm().
-				Title("Save this server configuration?").
-				Value(&confirmed),
-		),
-	)
-
-	if err := form.Run(); err != nil {
-		return prefill, err
+	portStr := prompt(scanner, "  Port", strconv.Itoa(result.Port))
+	if p, err := strconv.Atoi(portStr); err == nil {
+		result.Port = p
 	}
 
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		port = 22
+	result.User = prompt(scanner, "  User", result.User)
+
+	fmt.Println("\n  Authentication")
+	fmt.Println("  ──────────────")
+
+	result.KeyPath = prompt(scanner, "  SSH Key Path (empty for ssh-agent)", result.KeyPath)
+
+	authType := prompt(scanner, "  Auth Type (key/password)", result.AuthType)
+	if authType == "key" || authType == "password" {
+		result.AuthType = authType
 	}
-	result.Port = port
-	result.Confirmed = confirmed
+
+	result.SudoPasswordEnv = prompt(scanner, "  Sudo Password Env Var (optional)", result.SudoPasswordEnv)
+
+	fmt.Println("\n  ─────────────────")
+	fmt.Printf("  Server: %s@%s:%d\n", result.User, result.Host, result.Port)
+	fmt.Printf("  Auth:   %s\n", result.AuthType)
+
+	confirm := prompt(scanner, "\n  Save? (y/n)", "y")
+	result.Confirmed = strings.EqualFold(confirm, "y") || strings.EqualFold(confirm, "yes")
 
 	return result, nil
+}
+
+// prompt shows a field with a default value and reads user input.
+// Returns the default if the user presses Enter without typing.
+func prompt(scanner *bufio.Scanner, label, defaultVal string) string {
+	if defaultVal != "" {
+		fmt.Printf("%s [%s]: ", label, defaultVal)
+	} else {
+		fmt.Printf("%s: ", label)
+	}
+
+	if scanner.Scan() {
+		input := strings.TrimSpace(scanner.Text())
+		if input != "" {
+			return input
+		}
+	}
+	return defaultVal
 }
