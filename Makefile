@@ -6,7 +6,7 @@ GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
 LDFLAGS := -ldflags "-s -w -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME) -X main.GitCommit=$(GIT_COMMIT)"
 
-.PHONY: all build clean test test-e2e lint run install test-mcp build-all fmt vet setup
+.PHONY: all build clean test test-e2e lint run install test-mcp build-all fmt vet setup mutate
 
 all: build
 
@@ -61,6 +61,12 @@ test-e2e:
 	status=$$?; \
 	docker compose -f test/e2e/docker-compose.yml down -v; \
 	exit $$status
+
+# Mutation testing (runs on a specific package, default: security)
+# Usage: make mutate PKG=./internal/security
+PKG ?= ./internal/security
+mutate:
+	gremlins unleash --timeout-coefficient 3 $(PKG)
 
 # Install git hooks
 setup:
