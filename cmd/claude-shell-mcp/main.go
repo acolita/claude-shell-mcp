@@ -17,7 +17,7 @@ import (
 
 // Version information - set at build time.
 var (
-	Version   = "1.9.0"
+	Version   = "1.10.0"
 	BuildTime = "unknown"
 	GitCommit = "unknown"
 )
@@ -36,101 +36,99 @@ func main() {
 	flag.BoolVar(&formMode, "form", false, "Run as TUI form helper (internal use)")
 	flag.Parse()
 
-	// Form helper mode: show TUI form in its own terminal window, write result, exit.
-	// This is spawned by the MCP server's dialog provider.
 	if formMode {
-		if err := realdialog.RunFormHelper(); err != nil {
-			// Write error to done file so the MCP handler doesn't time out
-			if formFile := os.Getenv("CLAUDE_SHELL_FORM_FILE"); formFile != "" {
-				os.WriteFile(formFile+".done", []byte(err.Error()), 0600)
-			}
-			fmt.Fprintf(os.Stderr, "form error: %v\n", err)
-			os.Exit(1)
-		}
-		os.Exit(0)
+		runFormHelper()
 	}
 
 	if showVersion {
-		fmt.Printf("claude-shell-mcp version %s\n", Version)
-		fmt.Printf("  Build time: %s\n", BuildTime)
-		fmt.Printf("  Git commit: %s\n", GitCommit)
-		os.Exit(0)
+		printVersion()
 	}
 
-	// Use default config path if none specified
 	if configPath == "" {
 		configPath = config.DefaultConfigPath()
 	}
 
-	// Load configuration (creates default if file doesn't exist yet)
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
-		os.Exit(1)
-	}
+	cfg := loadConfig(configPath, debug)
 
-	// Enable debug mode if flag is set
-	if debug {
-		cfg.Logging.Level = "debug"
-	}
-
-	// Validate configuration
-	if err := cfg.Validate(); err != nil {
-		fmt.Fprintf(os.Stderr, "Invalid configuration: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Setup logging
 	logging.Setup(cfg.Logging.Level, cfg.Logging.Sanitize)
+	slog.Info("starting claude-shell-mcp", slog.String("version", Version))
 
-	slog.Info("starting claude-shell-mcp",
-		slog.String("version", Version),
-	)
-
-	// Create MCP server
 	server := mcp.NewServer(cfg, mcp.WithConfigPath(configPath))
+	watcher := setupConfigWatcher(configPath, debug, server)
 
-	// Set up config hot-reload if config file was provided
-	var configWatcher *config.Watcher
-	if configPath != "" {
-		var watcherErr error
-		configWatcher, watcherErr = config.NewWatcher(configPath, func(newCfg *config.Config) {
-			// Apply command line overrides to new config
-			if debug {
-				newCfg.Logging.Level = "debug"
-			}
-			server.UpdateConfig(newCfg)
-		})
-		if watcherErr != nil {
-			slog.Warn("config hot-reload disabled",
-				slog.String("error", watcherErr.Error()),
-			)
-		} else {
-			slog.Info("config hot-reload enabled",
-				slog.String("path", configPath),
-			)
-		}
-	}
-
-	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
 		<-sigChan
 		slog.Info("received shutdown signal")
-		if configWatcher != nil {
-			configWatcher.Close()
-		}
+		closeWatcher(watcher)
 		os.Exit(0)
 	}()
 
-	// Run the server
 	if err := server.Run(); err != nil {
 		slog.Error("server error", slog.String("error", err.Error()))
-		if configWatcher != nil {
-			configWatcher.Close()
-		}
+		closeWatcher(watcher)
 		os.Exit(1)
+	}
+}
+
+// runFormHelper runs the TUI form mode and exits. This is spawned by the
+// MCP server's dialog provider in a separate terminal window.
+func runFormHelper() {
+	if err := realdialog.RunFormHelper(); err != nil {
+		if formFile := os.Getenv("CLAUDE_SHELL_FORM_FILE"); formFile != "" {
+			os.WriteFile(formFile+".done", []byte(err.Error()), 0600)
+		}
+		fmt.Fprintf(os.Stderr, "form error: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+func printVersion() {
+	fmt.Printf("claude-shell-mcp version %s\n", Version)
+	fmt.Printf("  Build time: %s\n", BuildTime)
+	fmt.Printf("  Git commit: %s\n", GitCommit)
+	os.Exit(0)
+}
+
+func loadConfig(path string, debug bool) *config.Config {
+	cfg, err := config.Load(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+	if debug {
+		cfg.Logging.Level = "debug"
+	}
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid configuration: %v\n", err)
+		os.Exit(1)
+	}
+	return cfg
+}
+
+func setupConfigWatcher(configPath string, debug bool, server *mcp.Server) *config.Watcher {
+	if configPath == "" {
+		return nil
+	}
+	watcher, err := config.NewWatcher(configPath, func(newCfg *config.Config) {
+		if debug {
+			newCfg.Logging.Level = "debug"
+		}
+		server.UpdateConfig(newCfg)
+	})
+	if err != nil {
+		slog.Warn("config hot-reload disabled", slog.String("error", err.Error()))
+		return nil
+	}
+	slog.Info("config hot-reload enabled", slog.String("path", configPath))
+	return watcher
+}
+
+func closeWatcher(w *config.Watcher) {
+	if w != nil {
+		w.Close()
 	}
 }
