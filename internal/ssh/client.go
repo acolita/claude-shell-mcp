@@ -128,20 +128,23 @@ func (c *Client) Connect() error {
 	c.conn = conn
 	c.keepaliveStop = make(chan struct{})
 
-	// Start keepalive goroutine
-	go c.keepalive()
+	// Start keepalive goroutine.
+	// Copy the channel reference so the goroutine never reads the struct field.
+	stop := c.keepaliveStop
+	go c.keepalive(stop)
 
 	return nil
 }
 
 // keepalive sends periodic keepalive requests to prevent connection timeout.
-func (c *Client) keepalive() {
+// The stop channel is passed as a parameter to avoid a data race on the struct field.
+func (c *Client) keepalive(stop <-chan struct{}) {
 	ticker := c.clock.NewTicker(c.keepaliveInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-c.keepaliveStop:
+		case <-stop:
 			return
 		case <-ticker.C():
 			c.mu.Lock()

@@ -33,6 +33,7 @@ type Server struct {
 }
 
 type session struct {
+	mu       sync.Mutex // protects pty
 	channel  ssh.Channel
 	pty      *os.File
 	cmd      *exec.Cmd
@@ -137,9 +138,12 @@ func (s *Server) Close() error {
 	// Close all active sessions
 	s.sessionsMu.Lock()
 	for _, sess := range s.sessions {
+		sess.mu.Lock()
 		if sess.pty != nil {
 			sess.pty.Close()
+			sess.pty = nil
 		}
+		sess.mu.Unlock()
 		if sess.cmd != nil && sess.cmd.Process != nil {
 			sess.cmd.Process.Kill()
 		}
@@ -250,10 +254,12 @@ func (s *Server) handleExecReq(req *ssh.Request, sess *session, ptyReq *ptyReque
 // Waits for the PTY to be ready since the shell may be starting in a goroutine.
 func handleWindowChangeReq(req *ssh.Request, sess *session) {
 	<-sess.ptyReady
+	sess.mu.Lock()
 	if sess.pty != nil {
 		winReq := parseWindowChangeRequest(req.Payload)
 		setWinsize(sess.pty, winReq.Width, winReq.Height)
 	}
+	sess.mu.Unlock()
 	replyIfWanted(req, true)
 }
 
@@ -322,7 +328,9 @@ func (s *Server) runWithPTY(sess *session, cmd *exec.Cmd, ptyReq *ptyRequest) {
 		sendExitStatus(sess.channel, 1)
 		return
 	}
+	sess.mu.Lock()
 	sess.pty = ptmx
+	sess.mu.Unlock()
 	sess.cmd = cmd
 	close(sess.ptyReady)
 
@@ -342,7 +350,10 @@ func (s *Server) runWithPTY(sess *session, cmd *exec.Cmd, ptyReq *ptyRequest) {
 	// When the process exits, the slave PTY closes, causing the master to
 	// return EIO/EOF, which terminates io.Copy naturally.
 	<-done
+	sess.mu.Lock()
 	ptmx.Close()
+	sess.pty = nil
+	sess.mu.Unlock()
 	sendExitStatus(sess.channel, exitCode)
 }
 
