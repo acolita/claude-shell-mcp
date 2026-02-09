@@ -606,14 +606,14 @@ func TestValidation_SaveManifest_Success(t *testing.T) {
 	srv := newTestServerWithFS(sm, ffs)
 
 	manifest := &TransferManifest{
-		Version:    1,
-		Direction:  "get",
-		RemotePath: "/remote/file.bin",
-		LocalPath:  "/local/file.bin",
-		TotalSize:  1024,
-		ChunkSize:  512,
+		Version:     1,
+		Direction:   "get",
+		RemotePath:  "/remote/file.bin",
+		LocalPath:   "/local/file.bin",
+		TotalSize:   1024,
+		ChunkSize:   512,
 		TotalChunks: 2,
-		SessionID:  "sess_test",
+		SessionID:   "sess_test",
 		Chunks: []ChunkInfo{
 			{Index: 0, Offset: 0, Size: 512, Completed: true, Checksum: "abc123"},
 			{Index: 1, Offset: 512, Size: 512, Completed: false},
@@ -689,14 +689,14 @@ func TestValidation_LoadManifest_Success(t *testing.T) {
 	srv := newTestServerWithFS(sm, ffs)
 
 	manifest := TransferManifest{
-		Version:    1,
-		Direction:  "put",
-		RemotePath: "/remote/upload.bin",
-		LocalPath:  "/local/upload.bin",
-		TotalSize:  2048,
-		ChunkSize:  1024,
+		Version:     1,
+		Direction:   "put",
+		RemotePath:  "/remote/upload.bin",
+		LocalPath:   "/local/upload.bin",
+		TotalSize:   2048,
+		ChunkSize:   1024,
 		TotalChunks: 2,
-		SessionID:  "sess_load",
+		SessionID:   "sess_load",
 	}
 	data, _ := json.Marshal(manifest)
 	ffs.AddFile("/tmp/load.transfer", data, 0644)

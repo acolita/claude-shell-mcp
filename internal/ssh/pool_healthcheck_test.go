@@ -18,12 +18,12 @@ type fakeSSHConnUnhealthy struct {
 	sendRequestErr error
 }
 
-func (f *fakeSSHConnUnhealthy) User() string                          { return "test" }
-func (f *fakeSSHConnUnhealthy) SessionID() []byte                     { return []byte("fake-unhealthy") }
-func (f *fakeSSHConnUnhealthy) ClientVersion() []byte                 { return []byte("SSH-2.0-test") }
-func (f *fakeSSHConnUnhealthy) ServerVersion() []byte                 { return []byte("SSH-2.0-test") }
-func (f *fakeSSHConnUnhealthy) RemoteAddr() net.Addr                  { return f.Conn.RemoteAddr() }
-func (f *fakeSSHConnUnhealthy) LocalAddr() net.Addr                   { return f.Conn.LocalAddr() }
+func (f *fakeSSHConnUnhealthy) User() string          { return "test" }
+func (f *fakeSSHConnUnhealthy) SessionID() []byte     { return []byte("fake-unhealthy") }
+func (f *fakeSSHConnUnhealthy) ClientVersion() []byte { return []byte("SSH-2.0-test") }
+func (f *fakeSSHConnUnhealthy) ServerVersion() []byte { return []byte("SSH-2.0-test") }
+func (f *fakeSSHConnUnhealthy) RemoteAddr() net.Addr  { return f.Conn.RemoteAddr() }
+func (f *fakeSSHConnUnhealthy) LocalAddr() net.Addr   { return f.Conn.LocalAddr() }
 func (f *fakeSSHConnUnhealthy) SendRequest(name string, wantReply bool, payload []byte) (bool, []byte, error) {
 	return false, nil, f.sendRequestErr
 }

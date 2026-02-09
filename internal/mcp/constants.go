@@ -16,8 +16,8 @@ const (
 	errOpenLocalFile     = "open local file: %v"
 
 	// Peak-tty constants
-	peakTTYPgrepCmd    = "pgrep -x peak-tty 2>/dev/null || true"
-	peakTTYBinaryName  = "peak-tty"
+	peakTTYPgrepCmd   = "pgrep -x peak-tty 2>/dev/null || true"
+	peakTTYBinaryName = "peak-tty"
 
 	// Input detection hint
 	hintPeakTTYWaiting = "Process is waiting for input (detected by peak-tty)."

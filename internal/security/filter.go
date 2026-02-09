@@ -80,11 +80,11 @@ func (cf *CommandFilter) HasAllowlist() bool {
 // DefaultBlocklist returns a set of commonly dangerous patterns.
 func DefaultBlocklist() []string {
 	return []string{
-		`rm\s+-rf\s+/\s*$`,           // rm -rf /
-		`rm\s+-rf\s+/\*`,             // rm -rf /*
-		`mkfs\.`,                     // mkfs commands
-		`dd\s+.*of=/dev/[sh]d`,       // dd to raw devices
-		`:\s*\(\s*\)\s*\{\s*:\s*\|`,  // fork bomb
-		`>\s*/dev/[sh]d`,             // redirect to raw devices
+		`rm\s+-rf\s+/\s*$`,          // rm -rf /
+		`rm\s+-rf\s+/\*`,            // rm -rf /*
+		`mkfs\.`,                    // mkfs commands
+		`dd\s+.*of=/dev/[sh]d`,      // dd to raw devices
+		`:\s*\(\s*\)\s*\{\s*:\s*\|`, // fork bomb
+		`>\s*/dev/[sh]d`,            // redirect to raw devices
 	}
 }

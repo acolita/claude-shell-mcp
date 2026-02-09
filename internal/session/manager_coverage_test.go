@@ -1339,12 +1339,12 @@ type errorPTY struct {
 	closeErr error
 }
 
-func (p *errorPTY) Read(b []byte) (int, error)          { return 0, nil }
-func (p *errorPTY) Write(b []byte) (int, error)         { return len(b), nil }
-func (p *errorPTY) WriteString(s string) (int, error)    { return len(s), nil }
-func (p *errorPTY) Interrupt() error                     { return nil }
-func (p *errorPTY) Close() error                         { return p.closeErr }
-func (p *errorPTY) SetReadDeadline(t time.Time) error    { return nil }
+func (p *errorPTY) Read(b []byte) (int, error)        { return 0, nil }
+func (p *errorPTY) Write(b []byte) (int, error)       { return len(b), nil }
+func (p *errorPTY) WriteString(s string) (int, error) { return len(s), nil }
+func (p *errorPTY) Interrupt() error                  { return nil }
+func (p *errorPTY) Close() error                      { return p.closeErr }
+func (p *errorPTY) SetReadDeadline(t time.Time) error { return nil }
 
 // --- Close error path tests ---
 

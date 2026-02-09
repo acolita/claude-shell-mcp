@@ -1430,13 +1430,13 @@ func TestHandleShellTransferStatus_Success(t *testing.T) {
 
 	// Write a manifest file to the fake filesystem
 	manifest := TransferManifest{
-		Version:    1,
-		Direction:  "get",
-		RemotePath: "/remote/file.bin",
-		LocalPath:  "/local/file.bin",
-		TotalSize:  1000,
+		Version:     1,
+		Direction:   "get",
+		RemotePath:  "/remote/file.bin",
+		LocalPath:   "/local/file.bin",
+		TotalSize:   1000,
 		TotalChunks: 10,
-		BytesSent:  500,
+		BytesSent:   500,
 		Chunks: []ChunkInfo{
 			{Index: 0, Completed: true},
 			{Index: 1, Completed: true},
@@ -2770,16 +2770,16 @@ type fakeDirEntry struct {
 func (f *fakeDirEntry) Name() string               { return f.name }
 func (f *fakeDirEntry) IsDir() bool                { return f.isDir }
 func (f *fakeDirEntry) Type() fs.FileMode          { return f.mode.Type() }
-func (f *fakeDirEntry) Info() (fs.FileInfo, error)  { return &fakeInfo{f}, nil }
+func (f *fakeDirEntry) Info() (fs.FileInfo, error) { return &fakeInfo{f}, nil }
 
 type fakeInfo struct{ e *fakeDirEntry }
 
-func (fi *fakeInfo) Name() string      { return fi.e.name }
-func (fi *fakeInfo) Size() int64       { return fi.e.size }
-func (fi *fakeInfo) Mode() fs.FileMode { return fi.e.mode }
+func (fi *fakeInfo) Name() string       { return fi.e.name }
+func (fi *fakeInfo) Size() int64        { return fi.e.size }
+func (fi *fakeInfo) Mode() fs.FileMode  { return fi.e.mode }
 func (fi *fakeInfo) ModTime() time.Time { return fi.e.mod }
-func (fi *fakeInfo) IsDir() bool       { return fi.e.isDir }
-func (fi *fakeInfo) Sys() any          { return nil }
+func (fi *fakeInfo) IsDir() bool        { return fi.e.isDir }
+func (fi *fakeInfo) Sys() any           { return nil }
 
 // ==================== copyLocalFile tests ====================
 

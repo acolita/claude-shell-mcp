@@ -790,10 +790,10 @@ func TestSession_Status_IdleAndUptime(t *testing.T) {
 
 func TestSession_Status_ShellInfo(t *testing.T) {
 	tests := []struct {
-		name            string
-		shell           string
-		wantType        string
-		wantHistory     bool
+		name        string
+		shell       string
+		wantType    string
+		wantHistory bool
 	}{
 		{"bash", "/bin/bash", "bash", true},
 		{"zsh", "/usr/bin/zsh", "zsh", true},
@@ -1445,12 +1445,12 @@ func TestManager_Close_NotFound_CleansUpStaleStore(t *testing.T) {
 
 func TestTryParseEscape(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   string
-		pos     int
-		wantB   byte
-		wantN   int
-		wantOK  bool
+		name   string
+		input  string
+		pos    int
+		wantB  byte
+		wantN  int
+		wantOK bool
 	}{
 		{"newline", `\n`, 0, '\n', 2, true},
 		{"tab", `\t`, 0, '\t', 2, true},

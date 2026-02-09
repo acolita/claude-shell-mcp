@@ -10,14 +10,14 @@ import (
 
 // RunState tracks the execution state of a script.
 type RunState struct {
-	Script       *Script
-	CurrentStep  int
-	StepRepeats  map[int]int // Track repeat counts per step
-	Completed    bool
-	Aborted      bool
-	Error        error
-	StartedAt    time.Time
-	CompletedAt  time.Time
+	Script      *Script
+	CurrentStep int
+	StepRepeats map[int]int // Track repeat counts per step
+	Completed   bool
+	Aborted     bool
+	Error       error
+	StartedAt   time.Time
+	CompletedAt time.Time
 }
 
 // Runner executes expect scripts against session output.

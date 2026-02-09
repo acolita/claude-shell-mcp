@@ -24,7 +24,7 @@ type AuthConfig struct {
 	Host          string // Target host for SSH config lookup
 
 	// Injected dependencies (optional, defaults to real implementations)
-	FS     ports.FileSystem   // File system for reading keys/config
+	FS     ports.FileSystem    // File system for reading keys/config
 	Dialer ports.NetworkDialer // Network dialer for SSH agent connection
 }
 

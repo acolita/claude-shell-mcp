@@ -15,8 +15,8 @@ import (
 	"github.com/acolita/claude-shell-mcp/internal/ports"
 )
 
-func testFS() ports.FileSystem    { return realfs.New() }
-func testClock() ports.Clock      { return realclock.New() }
+func testFS() ports.FileSystem { return realfs.New() }
+func testClock() ports.Clock   { return realclock.New() }
 
 // ---------- Event tests ----------
 

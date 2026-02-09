@@ -129,21 +129,21 @@ Verifies completed chunks and resumes from the first incomplete chunk.`),
 
 // TransferManifest tracks the state of a chunked transfer.
 type TransferManifest struct {
-	Version        int             `json:"version"`
-	Direction      string          `json:"direction"` // "get" or "put"
-	RemotePath     string          `json:"remote_path"`
-	LocalPath      string          `json:"local_path"`
-	TotalSize      int64           `json:"total_size"`
-	ChunkSize      int             `json:"chunk_size"`
-	TotalChunks    int             `json:"total_chunks"`
-	FileChecksum   string          `json:"file_checksum,omitempty"`
-	Chunks         []ChunkInfo     `json:"chunks"`
-	StartedAt      time.Time       `json:"started_at"`
-	LastUpdatedAt  time.Time       `json:"last_updated_at"`
-	CompletedAt    *time.Time      `json:"completed_at,omitempty"`
-	SessionID      string          `json:"session_id"`
-	BytesSent      int64           `json:"bytes_sent"`
-	BytesPerSecond int64           `json:"bytes_per_second,omitempty"`
+	Version        int         `json:"version"`
+	Direction      string      `json:"direction"` // "get" or "put"
+	RemotePath     string      `json:"remote_path"`
+	LocalPath      string      `json:"local_path"`
+	TotalSize      int64       `json:"total_size"`
+	ChunkSize      int         `json:"chunk_size"`
+	TotalChunks    int         `json:"total_chunks"`
+	FileChecksum   string      `json:"file_checksum,omitempty"`
+	Chunks         []ChunkInfo `json:"chunks"`
+	StartedAt      time.Time   `json:"started_at"`
+	LastUpdatedAt  time.Time   `json:"last_updated_at"`
+	CompletedAt    *time.Time  `json:"completed_at,omitempty"`
+	SessionID      string      `json:"session_id"`
+	BytesSent      int64       `json:"bytes_sent"`
+	BytesPerSecond int64       `json:"bytes_per_second,omitempty"`
 }
 
 // ChunkInfo tracks the state of a single chunk.
@@ -157,16 +157,16 @@ type ChunkInfo struct {
 
 // ChunkedTransferResult represents the result of a chunked transfer operation.
 type ChunkedTransferResult struct {
-	Status          string  `json:"status"`
-	ManifestPath    string  `json:"manifest_path"`
-	ChunksCompleted int     `json:"chunks_completed"`
-	TotalChunks     int     `json:"total_chunks"`
-	BytesTransferred int64  `json:"bytes_transferred"`
-	TotalBytes      int64   `json:"total_bytes"`
-	Progress        float64 `json:"progress_percent"`
-	BytesPerSecond  int64   `json:"bytes_per_second,omitempty"`
-	DurationMs      int64   `json:"duration_ms,omitempty"`
-	Error           string  `json:"error,omitempty"`
+	Status           string  `json:"status"`
+	ManifestPath     string  `json:"manifest_path"`
+	ChunksCompleted  int     `json:"chunks_completed"`
+	TotalChunks      int     `json:"total_chunks"`
+	BytesTransferred int64   `json:"bytes_transferred"`
+	TotalBytes       int64   `json:"total_bytes"`
+	Progress         float64 `json:"progress_percent"`
+	BytesPerSecond   int64   `json:"bytes_per_second,omitempty"`
+	DurationMs       int64   `json:"duration_ms,omitempty"`
+	Error            string  `json:"error,omitempty"`
 }
 
 func (s *Server) handleShellFileGetChunked(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

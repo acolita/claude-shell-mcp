@@ -987,9 +987,9 @@ type fakeFileInfo struct {
 	isDir   bool
 }
 
-func (fi *fakeFileInfo) Name() string      { return fi.name }
-func (fi *fakeFileInfo) Size() int64       { return fi.size }
-func (fi *fakeFileInfo) Mode() os.FileMode { return fi.mode }
+func (fi *fakeFileInfo) Name() string       { return fi.name }
+func (fi *fakeFileInfo) Size() int64        { return fi.size }
+func (fi *fakeFileInfo) Mode() os.FileMode  { return fi.mode }
 func (fi *fakeFileInfo) ModTime() time.Time { return fi.modTime }
-func (fi *fakeFileInfo) IsDir() bool       { return fi.isDir }
-func (fi *fakeFileInfo) Sys() any          { return nil }
+func (fi *fakeFileInfo) IsDir() bool        { return fi.isDir }
+func (fi *fakeFileInfo) Sys() any           { return nil }

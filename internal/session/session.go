@@ -1983,10 +1983,10 @@ type ExecResult struct {
 	Truncated      bool   `json:"truncated,omitempty"`
 	TotalLines     int    `json:"total_lines,omitempty"`
 	ShownLines     int    `json:"shown_lines,omitempty"`
-	TotalBytes     int    `json:"total_bytes,omitempty"`      // Original output size in bytes
-	TruncatedBytes int    `json:"truncated_bytes,omitempty"`  // Bytes shown after truncation
-	Warning        string `json:"warning,omitempty"`          // Warning message for large outputs
-	OutputFile     string `json:"output_file,omitempty"`      // Path to file with full output (when too large)
+	TotalBytes     int    `json:"total_bytes,omitempty"`     // Original output size in bytes
+	TruncatedBytes int    `json:"truncated_bytes,omitempty"` // Bytes shown after truncation
+	Warning        string `json:"warning,omitempty"`         // Warning message for large outputs
+	OutputFile     string `json:"output_file,omitempty"`     // Path to file with full output (when too large)
 	// Async output from background processes (not from this command)
 	AsyncOutput string `json:"async_output,omitempty"`
 	// Command ID used for marker-based output isolation

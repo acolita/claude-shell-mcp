@@ -15,10 +15,10 @@ import (
 
 func TestChunkCalculation(t *testing.T) {
 	tests := []struct {
-		name        string
-		totalSize   int64
-		chunkSize   int
-		wantChunks  int
+		name       string
+		totalSize  int64
+		chunkSize  int
+		wantChunks int
 	}{
 		{"exact fit", 1024, 1024, 1},
 		{"one extra", 1025, 1024, 2},
@@ -213,8 +213,8 @@ func TestChunkSizeLimits(t *testing.T) {
 		{DefaultChunkSize, DefaultChunkSize},
 		{MaxChunkSize, MaxChunkSize},
 		{MaxChunkSize + 1, MaxChunkSize}, // Should be capped
-		{500, 1024},                       // Should be minimum 1024
-		{0, 1024},                         // Should be minimum 1024
+		{500, 1024},                      // Should be minimum 1024
+		{0, 1024},                        // Should be minimum 1024
 	}
 
 	for _, tt := range tests {
@@ -233,9 +233,9 @@ func TestChunkSizeLimits(t *testing.T) {
 
 func TestProgressCalculation(t *testing.T) {
 	tests := []struct {
-		bytesSent  int64
-		totalSize  int64
-		wantPct    float64
+		bytesSent int64
+		totalSize int64
+		wantPct   float64
 	}{
 		{0, 1000, 0},
 		{500, 1000, 50},

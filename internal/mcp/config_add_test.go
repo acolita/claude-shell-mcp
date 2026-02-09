@@ -156,11 +156,11 @@ func TestHandleShellConfigAdd_Success(t *testing.T) {
 	srv := newTestServerWithDialog(dp, "/tmp/config.yaml", nil)
 
 	req := makeRequest(map[string]any{
-		"name":               "prod",
-		"host":               "10.0.0.1",
-		"port":               2222,
-		"user":               "deploy",
-		"sudo_password_env":  "PROD_SUDO",
+		"name":              "prod",
+		"host":              "10.0.0.1",
+		"port":              2222,
+		"user":              "deploy",
+		"sudo_password_env": "PROD_SUDO",
 	})
 
 	result, err := srv.handleShellConfigAdd(context.Background(), req)

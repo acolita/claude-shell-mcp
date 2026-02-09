@@ -216,8 +216,8 @@ No space left on device`
 
 func TestSuggestPackageInstall(t *testing.T) {
 	tests := []struct {
-		cmd           string
-		wantContains  string
+		cmd          string
+		wantContains string
 	}{
 		{"node", "nodejs"},
 		{"python", "python"},

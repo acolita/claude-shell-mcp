@@ -22,11 +22,11 @@ type Analyzer struct {
 }
 
 type recoveryRule struct {
-	name      string
-	pattern   *regexp.Regexp
-	category  string
-	suggest   func(matches []string) *Suggestion
-	priority  int
+	name     string
+	pattern  *regexp.Regexp
+	category string
+	suggest  func(matches []string) *Suggestion
+	priority int
 }
 
 // NewAnalyzer creates a new error analyzer with default rules.
@@ -357,21 +357,21 @@ func defaultRules() []recoveryRule {
 func suggestPackageInstall(cmd string) []string {
 	// Common command -> package mappings
 	packageMap := map[string][]string{
-		"node":    {"sudo apt install nodejs", "brew install node"},
-		"npm":     {"sudo apt install npm", "brew install node"},
-		"python":  {"sudo apt install python3", "brew install python"},
-		"pip":     {"sudo apt install python3-pip", "brew install python"},
-		"docker":  {"sudo apt install docker.io", "brew install docker"},
-		"git":     {"sudo apt install git", "brew install git"},
-		"curl":    {"sudo apt install curl", "brew install curl"},
-		"wget":    {"sudo apt install wget", "brew install wget"},
-		"vim":     {"sudo apt install vim", "brew install vim"},
-		"htop":    {"sudo apt install htop", "brew install htop"},
-		"make":    {"sudo apt install build-essential", "xcode-select --install"},
-		"gcc":     {"sudo apt install build-essential", "xcode-select --install"},
-		"go":      {"sudo apt install golang", "brew install go"},
-		"cargo":   {"curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"},
-		"rustc":   {"curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"},
+		"node":   {"sudo apt install nodejs", "brew install node"},
+		"npm":    {"sudo apt install npm", "brew install node"},
+		"python": {"sudo apt install python3", "brew install python"},
+		"pip":    {"sudo apt install python3-pip", "brew install python"},
+		"docker": {"sudo apt install docker.io", "brew install docker"},
+		"git":    {"sudo apt install git", "brew install git"},
+		"curl":   {"sudo apt install curl", "brew install curl"},
+		"wget":   {"sudo apt install wget", "brew install wget"},
+		"vim":    {"sudo apt install vim", "brew install vim"},
+		"htop":   {"sudo apt install htop", "brew install htop"},
+		"make":   {"sudo apt install build-essential", "xcode-select --install"},
+		"gcc":    {"sudo apt install build-essential", "xcode-select --install"},
+		"go":     {"sudo apt install golang", "brew install go"},
+		"cargo":  {"curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"},
+		"rustc":  {"curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"},
 	}
 
 	if suggestions, ok := packageMap[cmd]; ok {

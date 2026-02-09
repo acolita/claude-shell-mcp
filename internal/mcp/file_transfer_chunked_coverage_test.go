@@ -621,17 +621,17 @@ func TestChunked_SaveAndLoadManifest_RealFS(t *testing.T) {
 
 	now := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
 	manifest := &TransferManifest{
-		Version:       1,
-		Direction:     "get",
-		RemotePath:    "/remote/data.bin",
-		LocalPath:     "/local/data.bin",
-		TotalSize:     5120,
-		ChunkSize:     1024,
-		TotalChunks:   5,
-		StartedAt:     now,
-		LastUpdatedAt: now,
-		SessionID:     "sess_manifest",
-		BytesSent:     3072,
+		Version:        1,
+		Direction:      "get",
+		RemotePath:     "/remote/data.bin",
+		LocalPath:      "/local/data.bin",
+		TotalSize:      5120,
+		ChunkSize:      1024,
+		TotalChunks:    5,
+		StartedAt:      now,
+		LastUpdatedAt:  now,
+		SessionID:      "sess_manifest",
+		BytesSent:      3072,
 		BytesPerSecond: 1024,
 		Chunks: []ChunkInfo{
 			{Index: 0, Offset: 0, Size: 1024, Completed: true, Checksum: "hash0"},
@@ -2036,7 +2036,7 @@ func TestChunked_UploadChunk_ReadLocalError(t *testing.T) {
 
 func TestChunked_SaveManifest_WriteFileError(t *testing.T) {
 	efs := &errorFS{
-		FS:          fakefs.New(),
+		FS:           fakefs.New(),
 		writeFileErr: io.ErrClosedPipe,
 	}
 	cfg := config.DefaultConfig()
@@ -2399,8 +2399,8 @@ func (e *errorFileHandle) Seek(offset int64, whence int) (int64, error) {
 	}
 	return offset, nil
 }
-func (e *errorFileHandle) Close() error                             { return nil }
-func (e *errorFileHandle) ReadAt(p []byte, off int64) (int, error)  { return 0, nil }
+func (e *errorFileHandle) Close() error                            { return nil }
+func (e *errorFileHandle) ReadAt(p []byte, off int64) (int, error) { return 0, nil }
 func (e *errorFileHandle) WriteAt(p []byte, off int64) (int, error) {
 	if e.writeAtErr != nil {
 		return 0, e.writeAtErr
@@ -2481,4 +2481,3 @@ func (e *errorFS) WriteFile(name string, data []byte, perm fs.FileMode) error {
 	}
 	return e.FS.WriteFile(name, data, perm)
 }
-

@@ -15,7 +15,7 @@ import (
 
 // TunnelConfig contains the configuration needed to recreate a tunnel.
 type TunnelConfig struct {
-	Type       string `json:"type"`        // "local" or "reverse"
+	Type       string `json:"type"` // "local" or "reverse"
 	LocalHost  string `json:"local_host"`
 	LocalPort  int    `json:"local_port"`
 	RemoteHost string `json:"remote_host"`

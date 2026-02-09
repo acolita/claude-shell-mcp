@@ -148,10 +148,10 @@ func (r *DirTransferResult) addError(path, errMsg string) {
 type symlinkAction int
 
 const (
-	symlinkSkip     symlinkAction = iota // Skip this entry entirely
-	symlinkHandled                       // Symlink was handled (preserved)
-	symlinkFollow                        // Continue processing the resolved target
-	symlinkError                         // Error occurred, skip entry
+	symlinkSkip    symlinkAction = iota // Skip this entry entirely
+	symlinkHandled                      // Symlink was handled (preserved)
+	symlinkFollow                       // Continue processing the resolved target
+	symlinkError                        // Error occurred, skip entry
 )
 
 // handleDownloadSymlink processes a symlink during download operations.
@@ -712,7 +712,6 @@ func (s *Server) finalizeTransferResult(result *DirTransferResult, startTime tim
 		result.Status = "completed_with_errors"
 	}
 }
-
 
 func (s *Server) handleLocalDirCopyPut(srcPath, dstPath string, opts DirPutOptions) (*mcp.CallToolResult, error) {
 	// For local sessions, this is essentially the same as DirGet but with different semantics

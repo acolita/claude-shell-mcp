@@ -18,12 +18,12 @@ type mockFileInfo struct {
 	isDir   bool
 }
 
-func (m mockFileInfo) Name() string      { return m.name }
-func (m mockFileInfo) Size() int64       { return m.size }
-func (m mockFileInfo) Mode() os.FileMode { return m.mode }
+func (m mockFileInfo) Name() string       { return m.name }
+func (m mockFileInfo) Size() int64        { return m.size }
+func (m mockFileInfo) Mode() os.FileMode  { return m.mode }
 func (m mockFileInfo) ModTime() time.Time { return m.modTime }
-func (m mockFileInfo) IsDir() bool       { return m.isDir }
-func (m mockFileInfo) Sys() interface{}  { return nil }
+func (m mockFileInfo) IsDir() bool        { return m.isDir }
+func (m mockFileInfo) Sys() interface{}   { return nil }
 
 func TestToFileInfo_RegularFile(t *testing.T) {
 	modTime := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)

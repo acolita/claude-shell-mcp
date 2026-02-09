@@ -19,12 +19,12 @@ import (
 
 // mockSSHPTY implements the interface embedded in sshPTYAdapter.
 type mockSSHPTY struct {
-	readFunc         func(b []byte) (int, error)
-	writeFunc        func(b []byte) (int, error)
-	writeStringFunc  func(s string) (int, error)
-	interruptFunc    func() error
-	closeFunc        func() error
-	setDeadlineFunc  func(t time.Time) error
+	readFunc        func(b []byte) (int, error)
+	writeFunc       func(b []byte) (int, error)
+	writeStringFunc func(s string) (int, error)
+	interruptFunc   func() error
+	closeFunc       func() error
+	setDeadlineFunc func(t time.Time) error
 
 	readCalled        bool
 	writeCalled       bool
@@ -228,12 +228,12 @@ func TestIntf_SSHAdapter_SetReadDeadline(t *testing.T) {
 
 // mockLocalPTY implements the interface embedded in localPTYAdapter.
 type mockLocalPTY struct {
-	readFunc         func(b []byte) (int, error)
-	writeFunc        func(b []byte) (int, error)
-	writeStringFunc  func(s string) (int, error)
-	interruptFunc    func() error
-	closeFunc        func() error
-	file             *os.File // can be nil
+	readFunc        func(b []byte) (int, error)
+	writeFunc       func(b []byte) (int, error)
+	writeStringFunc func(s string) (int, error)
+	interruptFunc   func() error
+	closeFunc       func() error
+	file            *os.File // can be nil
 }
 
 func newMockLocalPTY() *mockLocalPTY {
@@ -246,12 +246,12 @@ func newMockLocalPTY() *mockLocalPTY {
 	}
 }
 
-func (m *mockLocalPTY) Read(b []byte) (int, error)         { return m.readFunc(b) }
-func (m *mockLocalPTY) Write(b []byte) (int, error)        { return m.writeFunc(b) }
-func (m *mockLocalPTY) WriteString(s string) (int, error)   { return m.writeStringFunc(s) }
-func (m *mockLocalPTY) Interrupt() error                    { return m.interruptFunc() }
-func (m *mockLocalPTY) Close() error                        { return m.closeFunc() }
-func (m *mockLocalPTY) File() *os.File                      { return m.file }
+func (m *mockLocalPTY) Read(b []byte) (int, error)        { return m.readFunc(b) }
+func (m *mockLocalPTY) Write(b []byte) (int, error)       { return m.writeFunc(b) }
+func (m *mockLocalPTY) WriteString(s string) (int, error) { return m.writeStringFunc(s) }
+func (m *mockLocalPTY) Interrupt() error                  { return m.interruptFunc() }
+func (m *mockLocalPTY) Close() error                      { return m.closeFunc() }
+func (m *mockLocalPTY) File() *os.File                    { return m.file }
 
 // --- localPTYAdapter.Write ---
 

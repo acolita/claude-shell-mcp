@@ -516,7 +516,7 @@ func TestSession_ShellPromptCommand(t *testing.T) {
 		want  string
 	}{
 		{"bash", "/bin/bash", "PS1='$ '"},
-		{"zsh", "/bin/zsh", "PROMPT='$ '"},          // zsh uses PROMPT not PS1
+		{"zsh", "/bin/zsh", "PROMPT='$ '"}, // zsh uses PROMPT not PS1
 		{"sh", "/bin/sh", "PS1='$ '"},
 		{"fish", "/usr/bin/fish", "function fish_prompt"}, // fish uses function syntax
 	}

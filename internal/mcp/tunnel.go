@@ -305,9 +305,9 @@ Use tunnel_index to restore a specific tunnel, or omit it to restore all saved t
 
 // TunnelRestoreResult represents the result of restoring tunnels.
 type TunnelRestoreResult struct {
-	Status   string             `json:"status"`
+	Status   string               `json:"status"`
 	Restored []TunnelCreateResult `json:"restored,omitempty"`
-	Errors   []string           `json:"errors,omitempty"`
+	Errors   []string             `json:"errors,omitempty"`
 }
 
 func (s *Server) handleShellTunnelRestore(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

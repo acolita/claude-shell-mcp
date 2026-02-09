@@ -31,13 +31,13 @@ type LocalPTY struct {
 
 // PTYOptions configures PTY allocation.
 type PTYOptions struct {
-	Shell  string   // Shell to use (defaults to user's shell or /bin/bash)
-	Term   string   // Terminal type (default: xterm-256color)
-	Rows   uint16   // Terminal rows (default: 24)
-	Cols   uint16   // Terminal columns (default: 80)
-	Dir    string   // Initial working directory
-	Env    []string // Additional environment variables
-	NoRC   bool     // Don't source rc files (--norc for bash, --no-rcs for zsh)
+	Shell string   // Shell to use (defaults to user's shell or /bin/bash)
+	Term  string   // Terminal type (default: xterm-256color)
+	Rows  uint16   // Terminal rows (default: 24)
+	Cols  uint16   // Terminal columns (default: 80)
+	Dir   string   // Initial working directory
+	Env   []string // Additional environment variables
+	NoRC  bool     // Don't source rc files (--norc for bash, --no-rcs for zsh)
 }
 
 // DefaultOptions returns default PTY options.

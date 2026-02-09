@@ -35,7 +35,7 @@ func (c *Client) ensureConnected() error {
 	defer c.mu.Unlock()
 
 	if c.closed {
-		return fmt.Errorf("sftp client is closed")
+		return errClosed
 	}
 
 	if c.sftpClient != nil {
@@ -80,198 +80,199 @@ func (c *Client) IsConnected() bool {
 	return c.sftpClient != nil && !c.closed
 }
 
-// Stat returns file information for the given path.
-func (c *Client) Stat(path string) (os.FileInfo, error) {
+// errClosed is returned when an operation is attempted on a closed client.
+var errClosed = fmt.Errorf("sftp client is closed")
+
+// getClient ensures the SFTP client is connected and returns it under the lock.
+// The caller must call c.mu.Unlock() when done with the returned client.
+func (c *Client) getClient() (*sftp.Client, error) {
 	if err := c.ensureConnected(); err != nil {
 		return nil, err
 	}
 
 	c.mu.Lock()
+	if c.sftpClient == nil {
+		c.mu.Unlock()
+		return nil, errClosed
+	}
+	return c.sftpClient, nil
+}
+
+// Stat returns file information for the given path.
+func (c *Client) Stat(path string) (os.FileInfo, error) {
+	client, err := c.getClient()
+	if err != nil {
+		return nil, err
+	}
 	defer c.mu.Unlock()
 
-	return c.sftpClient.Stat(path)
+	return client.Stat(path)
 }
 
 // Lstat returns file information without following symlinks.
 func (c *Client) Lstat(path string) (os.FileInfo, error) {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return nil, err
 	}
-
-	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.sftpClient.Lstat(path)
+	return client.Lstat(path)
 }
 
 // ReadDir reads the contents of a directory.
 func (c *Client) ReadDir(path string) ([]os.FileInfo, error) {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return nil, err
 	}
-
-	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.sftpClient.ReadDir(path)
+	return client.ReadDir(path)
 }
 
 // ReadLink returns the destination of a symbolic link.
 func (c *Client) ReadLink(path string) (string, error) {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return "", err
 	}
-
-	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.sftpClient.ReadLink(path)
+	return client.ReadLink(path)
 }
 
 // Mkdir creates a directory.
 func (c *Client) Mkdir(path string) error {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return err
 	}
-
-	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.sftpClient.Mkdir(path)
+	return client.Mkdir(path)
 }
 
 // MkdirAll creates a directory and all parent directories.
 func (c *Client) MkdirAll(path string) error {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return err
 	}
-
-	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.sftpClient.MkdirAll(path)
+	return client.MkdirAll(path)
 }
 
 // Remove removes a file or empty directory.
 func (c *Client) Remove(path string) error {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return err
 	}
-
-	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.sftpClient.Remove(path)
+	return client.Remove(path)
 }
 
 // Rename renames a file or directory.
 // Note: SFTP Rename fails if the destination already exists.
 // Use PosixRename for atomic overwrite semantics.
 func (c *Client) Rename(oldPath, newPath string) error {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return err
 	}
-
-	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.sftpClient.Rename(oldPath, newPath)
+	return client.Rename(oldPath, newPath)
 }
 
 // PosixRename renames a file using the posix-rename@openssh.com extension,
 // which atomically replaces the destination if it already exists.
 // Supported by all modern OpenSSH servers (since 4.8, 2008).
 func (c *Client) PosixRename(oldPath, newPath string) error {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return err
 	}
-
-	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.sftpClient.PosixRename(oldPath, newPath)
+	return client.PosixRename(oldPath, newPath)
 }
 
 // Chmod changes the permissions of a file.
 func (c *Client) Chmod(path string, mode os.FileMode) error {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return err
 	}
-
-	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.sftpClient.Chmod(path, mode)
+	return client.Chmod(path, mode)
 }
 
 // Chtimes changes the access and modification times of a file.
 func (c *Client) Chtimes(path string, atime, mtime time.Time) error {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return err
 	}
-
-	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.sftpClient.Chtimes(path, atime, mtime)
+	return client.Chtimes(path, atime, mtime)
 }
 
 // Symlink creates a symbolic link.
 func (c *Client) Symlink(oldPath, newPath string) error {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return err
 	}
-
-	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.sftpClient.Symlink(oldPath, newPath)
+	return client.Symlink(oldPath, newPath)
 }
 
 // Open opens a file for reading.
 func (c *Client) Open(path string) (*sftp.File, error) {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return nil, err
 	}
-
-	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.sftpClient.Open(path)
+	return client.Open(path)
 }
 
 // Create creates or truncates a file for writing.
 func (c *Client) Create(path string) (*sftp.File, error) {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return nil, err
 	}
-
-	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.sftpClient.Create(path)
+	return client.Create(path)
 }
 
 // OpenFile opens a file with the specified flags and mode.
 func (c *Client) OpenFile(path string, flags int) (*sftp.File, error) {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return nil, err
 	}
-
-	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.sftpClient.OpenFile(path, flags)
+	return client.OpenFile(path, flags)
 }
 
 // ReadFile reads the entire contents of a file.
 func (c *Client) ReadFile(path string) ([]byte, error) {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return nil, err
 	}
-
-	c.mu.Lock()
-	client := c.sftpClient
 	c.mu.Unlock()
 
 	file, err := client.Open(path)
@@ -285,12 +286,10 @@ func (c *Client) ReadFile(path string) ([]byte, error) {
 
 // WriteFile writes data to a file, creating it if necessary.
 func (c *Client) WriteFile(path string, data []byte, perm os.FileMode) error {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return err
 	}
-
-	c.mu.Lock()
-	client := c.sftpClient
 	c.mu.Unlock()
 
 	file, err := client.Create(path)
@@ -315,12 +314,10 @@ func (c *Client) WriteFile(path string, data []byte, perm os.FileMode) error {
 // GetFile downloads a file and returns its contents.
 // For large files, use GetFileStream instead.
 func (c *Client) GetFile(remotePath string) ([]byte, os.FileInfo, error) {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return nil, nil, err
 	}
-
-	c.mu.Lock()
-	client := c.sftpClient
 	c.mu.Unlock()
 
 	file, err := client.Open(remotePath)
@@ -345,12 +342,10 @@ func (c *Client) GetFile(remotePath string) ([]byte, os.FileInfo, error) {
 // PutFile uploads data to a remote file.
 // For large files, use PutFileStream instead.
 func (c *Client) PutFile(remotePath string, data []byte, perm os.FileMode) error {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return err
 	}
-
-	c.mu.Lock()
-	client := c.sftpClient
 	c.mu.Unlock()
 
 	file, err := client.Create(remotePath)
@@ -375,12 +370,10 @@ func (c *Client) PutFile(remotePath string, data []byte, perm os.FileMode) error
 // GetFileStream opens a remote file for streaming reads.
 // Caller is responsible for closing the returned file.
 func (c *Client) GetFileStream(remotePath string) (*sftp.File, os.FileInfo, error) {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return nil, nil, err
 	}
-
-	c.mu.Lock()
-	client := c.sftpClient
 	c.mu.Unlock()
 
 	file, err := client.Open(remotePath)
@@ -400,12 +393,10 @@ func (c *Client) GetFileStream(remotePath string) (*sftp.File, os.FileInfo, erro
 // PutFileStream creates a remote file for streaming writes.
 // Caller is responsible for closing the returned file.
 func (c *Client) PutFileStream(remotePath string) (*sftp.File, error) {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return nil, err
 	}
-
-	c.mu.Lock()
-	client := c.sftpClient
 	c.mu.Unlock()
 
 	file, err := client.Create(remotePath)
@@ -418,26 +409,24 @@ func (c *Client) PutFileStream(remotePath string) (*sftp.File, error) {
 
 // Getwd returns the current working directory on the remote server.
 func (c *Client) Getwd() (string, error) {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return "", err
 	}
-
-	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.sftpClient.Getwd()
+	return client.Getwd()
 }
 
 // RealPath returns the real path of a file (resolves symlinks and relative paths).
 func (c *Client) RealPath(path string) (string, error) {
-	if err := c.ensureConnected(); err != nil {
+	client, err := c.getClient()
+	if err != nil {
 		return "", err
 	}
-
-	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.sftpClient.RealPath(path)
+	return client.RealPath(path)
 }
 
 // FileInfo contains metadata about a remote file.

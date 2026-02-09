@@ -17,12 +17,12 @@ type fakeSSHConn struct {
 	net.Conn
 }
 
-func (f *fakeSSHConn) User() string                                          { return "test" }
-func (f *fakeSSHConn) SessionID() []byte                                     { return []byte("fake") }
-func (f *fakeSSHConn) ClientVersion() []byte                                 { return []byte("SSH-2.0-test") }
-func (f *fakeSSHConn) ServerVersion() []byte                                 { return []byte("SSH-2.0-test") }
-func (f *fakeSSHConn) RemoteAddr() net.Addr                                  { return f.Conn.RemoteAddr() }
-func (f *fakeSSHConn) LocalAddr() net.Addr                                   { return f.Conn.LocalAddr() }
+func (f *fakeSSHConn) User() string          { return "test" }
+func (f *fakeSSHConn) SessionID() []byte     { return []byte("fake") }
+func (f *fakeSSHConn) ClientVersion() []byte { return []byte("SSH-2.0-test") }
+func (f *fakeSSHConn) ServerVersion() []byte { return []byte("SSH-2.0-test") }
+func (f *fakeSSHConn) RemoteAddr() net.Addr  { return f.Conn.RemoteAddr() }
+func (f *fakeSSHConn) LocalAddr() net.Addr   { return f.Conn.LocalAddr() }
 func (f *fakeSSHConn) SendRequest(name string, wantReply bool, payload []byte) (bool, []byte, error) {
 	return false, nil, nil
 }

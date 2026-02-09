@@ -246,8 +246,8 @@ func (d *Detector) suggestAlternative(cmd string, parts []string) string {
 func IsSudoPrompt(output string) bool {
 	patterns := []string{
 		`\[sudo\]\s+password\s+for\s+\w+:`,
-		`^Password:\s*$`,                // Just "Password:" alone
-		`password\s+for\s+\w+:\s*$`,     // "password for user:"
+		`^Password:\s*$`,            // Just "Password:" alone
+		`password\s+for\s+\w+:\s*$`, // "password for user:"
 	}
 
 	for _, p := range patterns {

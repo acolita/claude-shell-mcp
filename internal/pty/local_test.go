@@ -70,13 +70,19 @@ func waitForOutput(p *LocalPTY, cmd, expected string, timeout time.Duration) (st
 	deadline := time.After(timeout)
 	var sb strings.Builder
 	buf := make([]byte, 4096)
-	ch := make(chan struct{ n int; err error }, 1)
+	ch := make(chan struct {
+		n   int
+		err error
+	}, 1)
 
 	for {
 		// Start a non-blocking read attempt via goroutine
 		go func() {
 			n, err := p.Read(buf)
-			ch <- struct{ n int; err error }{n, err}
+			ch <- struct {
+				n   int
+				err error
+			}{n, err}
 		}()
 
 		select {

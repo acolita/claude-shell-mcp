@@ -6,7 +6,7 @@ GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
 LDFLAGS := -ldflags "-s -w -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME) -X main.GitCommit=$(GIT_COMMIT)"
 
-.PHONY: all build clean test test-e2e lint run install test-mcp build-all fmt vet
+.PHONY: all build clean test test-e2e lint run install test-mcp build-all fmt vet setup
 
 all: build
 
@@ -61,6 +61,11 @@ test-e2e:
 	status=$$?; \
 	docker compose -f test/e2e/docker-compose.yml down -v; \
 	exit $$status
+
+# Install git hooks
+setup:
+	git config core.hooksPath .githooks
+	@echo "Git hooks installed from .githooks/"
 
 # Show version
 version:

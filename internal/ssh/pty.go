@@ -25,11 +25,11 @@ type SSHPTY struct {
 	cols uint32
 
 	// Buffered reader for timeout support
-	dataCh   chan []byte   // Channel for incoming data chunks
-	errCh    chan error    // Channel for read errors
-	closeCh  chan struct{} // Channel to signal close
-	closed   bool
-	closeMu  sync.Mutex
+	dataCh  chan []byte   // Channel for incoming data chunks
+	errCh   chan error    // Channel for read errors
+	closeCh chan struct{} // Channel to signal close
+	closed  bool
+	closeMu sync.Mutex
 
 	// Read deadline support
 	readDeadline time.Time
@@ -41,9 +41,9 @@ type SSHPTY struct {
 
 // SSHPTYOptions configures SSH PTY allocation.
 type SSHPTYOptions struct {
-	Term string // Terminal type (default: dumb)
-	Rows uint32 // Terminal rows (default: 24)
-	Cols uint32 // Terminal columns (default: 120)
+	Term string            // Terminal type (default: dumb)
+	Rows uint32            // Terminal rows (default: 24)
+	Cols uint32            // Terminal columns (default: 120)
 	Env  map[string]string // Environment variables to set
 }
 

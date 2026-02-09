@@ -1,0 +1,96 @@
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gosimple
+    - gofmt
+    - goimports
+    - misspell
+    - unconvert
+    - gocritic
+    - nilerr
+    - bodyclose
+    - copyloopvar
+    - durationcheck
+    - errname
+    - errorlint
+    - fatcontext
+    - makezero
+    - noctx
+    - prealloc
+    - reassign
+    - tenv
+    - wastedassign
+
+linters-settings:
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment # too noisy for this project
+
+  gocritic:
+    enabled-checks:
+      - appendAssign
+      - argOrder
+      - badCall
+      - badCond
+      - boolExprSimplify
+      - caseOrder
+      - dupArg
+      - dupBranchBody
+      - dupCase
+      - dupSubExpr
+      - elseif
+      - exitAfterDefer
+      - flagDeref
+      - nilValReturn
+      - rangeExprCopy
+      - regexpMust
+      - sloppyLen
+      - switchTrue
+      - typeSwitchVar
+      - underef
+      - unlambda
+      - unslice
+
+  errcheck:
+    check-type-assertions: true
+
+  errorlint:
+    errorf: true
+    asserts: true
+    comparison: true
+
+  misspell:
+    locale: US
+
+  prealloc:
+    simple: true
+    for-loops: true
+
+issues:
+  exclude-dirs:
+    - vendor
+
+  exclude-rules:
+    # Test files can be more relaxed
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gocritic
+        - prealloc
+        - noctx
+
+    # Allow unsafe in the mock SSH server (needed for ioctl)
+    - path: internal/testing/mockssh/
+      text: "use of unsafe"
+
+    # Allow dot imports in test files for testify etc.
+    - path: _test\.go
+      text: "dot-imports"

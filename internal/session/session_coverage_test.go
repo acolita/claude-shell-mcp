@@ -183,10 +183,10 @@ func TestParseAliasOutput(t *testing.T) {
 
 func TestSession_GetShellInfo(t *testing.T) {
 	tests := []struct {
-		name            string
-		shell           string
-		wantType        string
-		wantHistory     bool
+		name        string
+		shell       string
+		wantType    string
+		wantHistory bool
 	}{
 		{"bash", "/bin/bash", "bash", true},
 		{"zsh", "/usr/bin/zsh", "zsh", true},

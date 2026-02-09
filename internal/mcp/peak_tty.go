@@ -289,10 +289,10 @@ func (s *Server) handlePeakTTYDeploy(ctx context.Context, req mcp.CallToolReques
 	// Find the peak-tty binary
 	// Search in several possible locations
 	searchPaths := []string{
-		"peak-tty/peak-tty",        // Submodule path (relative to cwd)
-		"./peak-tty",               // Current directory
-		"/usr/local/bin/peak-tty",  // System path
-		"/usr/bin/peak-tty",        // System path
+		"peak-tty/peak-tty",       // Submodule path (relative to cwd)
+		"./peak-tty",              // Current directory
+		"/usr/local/bin/peak-tty", // System path
+		"/usr/bin/peak-tty",       // System path
 	}
 
 	// Also check relative to the executable
