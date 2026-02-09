@@ -6,7 +6,7 @@ GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
 LDFLAGS := -ldflags "-s -w -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME) -X main.GitCommit=$(GIT_COMMIT)"
 
-.PHONY: all build clean test lint run install test-mcp build-all fmt vet
+.PHONY: all build clean test test-e2e lint run install test-mcp build-all fmt vet
 
 all: build
 
@@ -53,6 +53,14 @@ build-all:
 	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o dist/claude-shell-mcp-darwin-amd64 ./cmd/claude-shell-mcp
 	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o dist/claude-shell-mcp-darwin-arm64 ./cmd/claude-shell-mcp
 	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o dist/claude-shell-mcp-windows-amd64.exe ./cmd/claude-shell-mcp
+
+# E2E tests with Docker SSH containers
+test-e2e:
+	docker compose -f test/e2e/docker-compose.yml up -d --build --wait
+	go test -tags=e2e -v -timeout 300s ./test/e2e/...; \
+	status=$$?; \
+	docker compose -f test/e2e/docker-compose.yml down -v; \
+	exit $$status
 
 # Show version
 version:

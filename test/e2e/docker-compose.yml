@@ -1,0 +1,28 @@
+services:
+  sshd-key:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+      args:
+        AUTH_TYPE: key
+    ports:
+      - "2222:22"
+    healthcheck:
+      test: ["CMD", "pgrep", "sshd"]
+      interval: 2s
+      timeout: 5s
+      retries: 5
+
+  sshd-pass:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+      args:
+        AUTH_TYPE: password
+    ports:
+      - "2223:22"
+    healthcheck:
+      test: ["CMD", "pgrep", "sshd"]
+      interval: 2s
+      timeout: 5s
+      retries: 5
